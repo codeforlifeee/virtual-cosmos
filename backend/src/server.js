@@ -33,6 +33,7 @@ const ICE_SERVERS = (() => {
 const ALLOWED_HATS = ["none", "cap", "halo", "wizard"];
 const ALLOWED_BADGES = ["none", "star", "helper", "captain"];
 const EMOTES = new Set(["wave", "thumbs", "laugh"]);
+const DEFAULT_ROOM_ID = "lobby";
 
 const DEFAULT_ZONES = [
 	{
@@ -106,6 +107,7 @@ const UserProfile = mongoose.model(
 			avatarColor: { type: String, required: true },
 			hat: { type: String, required: true },
 			badge: { type: String, required: true },
+			lastRoomId: { type: String, default: DEFAULT_ROOM_ID },
 			lastX: { type: Number, required: true },
 			lastY: { type: Number, required: true },
 			blockedUserKeys: { type: [String], default: [] },
@@ -121,6 +123,7 @@ const ModerationReport = mongoose.model(
 	"ModerationReport",
 	new mongoose.Schema(
 		{
+			roomId: { type: String, required: true, index: true },
 			reporterUserKey: { type: String, required: true, index: true },
 			targetUserKey: { type: String, required: true, index: true },
 			reason: { type: String, required: true },
@@ -136,6 +139,7 @@ const ChatMessage = mongoose.model(
 	"ChatMessage",
 	new mongoose.Schema(
 		{
+			roomId: { type: String, required: true, index: true },
 			fromUserKey: { type: String, required: true, index: true },
 			toUserKey: { type: String, required: true, index: true },
 			text: { type: String, required: true },
@@ -189,6 +193,18 @@ const safeHexColor = (value) => {
 	return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : "#34d399";
 };
 
+const safeRoomId = (value) => {
+	const normalized = String(value || "")
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-_]/g, "")
+		.slice(0, 32);
+
+	return normalized || DEFAULT_ROOM_ID;
+};
+
+const worldRoomId = (roomId) => `world:${roomId}`;
+
 const safeHat = (value) => (ALLOWED_HATS.includes(value) ? value : "none");
 const safeBadge = (value) => (ALLOWED_BADGES.includes(value) ? value : "none");
 
@@ -216,9 +232,9 @@ const findZoneId = (x, y) => {
 	return null;
 };
 
-const pairRoomId = (socketIdA, socketIdB) => {
+const pairRoomId = (roomId, socketIdA, socketIdB) => {
 	const [first, second] = [socketIdA, socketIdB].sort();
-	return `proximity:${first}:${second}`;
+	return `proximity:${roomId}:${first}:${second}`;
 };
 
 const isPairBlocked = (userA, userB) =>
@@ -231,6 +247,7 @@ const toClientUser = (user) => ({
 	x: user.x,
 	y: user.y,
 	zoneId: user.zoneId,
+	roomId: user.roomId,
 	avatarColor: user.avatarColor,
 	hat: user.hat,
 	badge: user.badge,
@@ -274,10 +291,14 @@ const connectUsers = (socketIdA, socketIdB) => {
 		return;
 	}
 
+	if (userA.roomId !== userB.roomId) {
+		return;
+	}
+
 	userA.connections.add(socketIdB);
 	userB.connections.add(socketIdA);
 
-	const roomId = pairRoomId(socketIdA, socketIdB);
+	const roomId = pairRoomId(userA.roomId, socketIdA, socketIdB);
 	io.sockets.sockets.get(socketIdA)?.join(roomId);
 	io.sockets.sockets.get(socketIdB)?.join(roomId);
 
@@ -296,7 +317,7 @@ const disconnectUsers = (socketIdA, socketIdB) => {
 	userA.connections.delete(socketIdB);
 	userB.connections.delete(socketIdA);
 
-	const roomId = pairRoomId(socketIdA, socketIdB);
+	const roomId = pairRoomId(userA.roomId, socketIdA, socketIdB);
 	io.sockets.sockets.get(socketIdA)?.leave(roomId);
 	io.sockets.sockets.get(socketIdB)?.leave(roomId);
 
@@ -312,6 +333,13 @@ const reconcileProximity = (sourceSocketId) => {
 
 	for (const [targetSocketId, targetUser] of users.entries()) {
 		if (targetSocketId === sourceSocketId) {
+			continue;
+		}
+
+		if (sourceUser.roomId !== targetUser.roomId) {
+			if (sourceUser.connections.has(targetSocketId)) {
+				disconnectUsers(sourceSocketId, targetSocketId);
+			}
 			continue;
 		}
 
@@ -344,6 +372,7 @@ const persistProfile = async (user) => {
 				avatarColor: user.avatarColor,
 				hat: user.hat,
 				badge: user.badge,
+				lastRoomId: user.roomId,
 				lastX: user.x,
 				lastY: user.y,
 				blockedUserKeys: Array.from(user.blockedUserKeys),
@@ -369,6 +398,10 @@ const forwardVoiceSignal = ({
 		return;
 	}
 
+	if (sourceUser.roomId !== targetUser.roomId) {
+		return;
+	}
+
 	if (isPairBlocked(sourceUser, targetUser)) {
 		return;
 	}
@@ -382,6 +415,7 @@ const forwardVoiceSignal = ({
 io.on("connection", async (socket) => {
 	const auth = socket.handshake.auth || {};
 	const userKey = String(auth.userKey || socket.id).slice(0, 64);
+	const roomId = safeRoomId(auth.roomId);
 
 	let existingProfile = null;
 	if (process.env.MONGO_URI) {
@@ -393,7 +427,7 @@ io.on("connection", async (socket) => {
 	}
 
 	let spawn = createRandomSpawn();
-	if (existingProfile) {
+	if (existingProfile?.lastRoomId === roomId) {
 		spawn = {
 			x: clamp(existingProfile.lastX, 0, WORLD_WIDTH),
 			y: clamp(existingProfile.lastY, 0, WORLD_HEIGHT),
@@ -415,6 +449,7 @@ io.on("connection", async (socket) => {
 		x: spawn.x,
 		y: spawn.y,
 		zoneId: findZoneId(spawn.x, spawn.y),
+		roomId,
 		connections: new Set(),
 		blockedUserKeys: new Set(existingProfile?.blockedUserKeys || []),
 		mutedUserKeys: new Set(existingProfile?.mutedUserKeys || []),
@@ -422,6 +457,7 @@ io.on("connection", async (socket) => {
 	};
 
 	users.set(socket.id, user);
+	socket.join(worldRoomId(roomId));
 
 	socket.emit("world:init", {
 		selfId: socket.id,
@@ -429,14 +465,17 @@ io.on("connection", async (socket) => {
 			worldWidth: WORLD_WIDTH,
 			worldHeight: WORLD_HEIGHT,
 			proximityRadius: PROXIMITY_RADIUS,
+			roomId,
 			zones: DEFAULT_ZONES,
 			iceServers: ICE_SERVERS,
 		},
-		users: Array.from(users.values()).map(toClientUser),
+		users: Array.from(users.values())
+			.filter((activeUser) => activeUser.roomId === roomId)
+			.map(toClientUser),
 	});
 
 	emitModerationState(socket.id);
-	socket.broadcast.emit("world:user-joined", toClientUser(user));
+	socket.to(worldRoomId(roomId)).emit("world:user-joined", toClientUser(user));
 	reconcileProximity(socket.id);
 	await persistProfile(user);
 
@@ -460,7 +499,7 @@ io.on("connection", async (socket) => {
 		}
 
 		reconcileProximity(socket.id);
-		io.emit("world:user-moved", toClientUser(activeUser));
+		io.to(worldRoomId(activeUser.roomId)).emit("world:user-moved", toClientUser(activeUser));
 
 		if (Date.now() - activeUser.lastPersistAt > 5000) {
 			activeUser.lastPersistAt = Date.now();
@@ -479,7 +518,7 @@ io.on("connection", async (socket) => {
 		activeUser.hat = safeHat(payload?.hat || activeUser.hat);
 		activeUser.badge = safeBadge(payload?.badge || activeUser.badge);
 
-		io.emit("world:user-updated", toClientUser(activeUser));
+		io.to(worldRoomId(activeUser.roomId)).emit("world:user-updated", toClientUser(activeUser));
 		await persistProfile(activeUser);
 	});
 
@@ -490,12 +529,16 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		if (sourceUser.roomId !== targetUser.roomId) {
+			return;
+		}
+
 		const text = String(payload?.text || "").trim();
 		if (!text || !sourceUser.connections.has(targetUser.socketId) || isPairBlocked(sourceUser, targetUser)) {
 			return;
 		}
 
-		const roomId = pairRoomId(socket.id, targetUser.socketId);
+		const roomId = pairRoomId(sourceUser.roomId, socket.id, targetUser.socketId);
 		io.to(roomId).emit("chat:message", {
 			roomId,
 			fromId: socket.id,
@@ -507,6 +550,7 @@ io.on("connection", async (socket) => {
 		if (process.env.MONGO_URI) {
 			try {
 				await ChatMessage.create({
+					roomId: sourceUser.roomId,
 					fromUserKey: sourceUser.userKey,
 					toUserKey: targetUser.userKey,
 					text: text.slice(0, 300),
@@ -527,11 +571,15 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		if (sourceUser.roomId !== targetUser.roomId) {
+			return;
+		}
+
 		if (!sourceUser.connections.has(targetUser.socketId) || isPairBlocked(sourceUser, targetUser)) {
 			return;
 		}
 
-		const roomId = pairRoomId(sourceUser.socketId, targetUser.socketId);
+		const roomId = pairRoomId(sourceUser.roomId, sourceUser.socketId, targetUser.socketId);
 		io.to(roomId).emit("emote:show", {
 			fromId: sourceUser.socketId,
 			toId: targetUser.socketId,
@@ -583,6 +631,10 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		if (sourceUser.roomId !== targetUser.roomId) {
+			return;
+		}
+
 		const shouldBlock = Boolean(payload?.blocked);
 		if (shouldBlock) {
 			sourceUser.blockedUserKeys.add(targetUser.userKey);
@@ -606,6 +658,10 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		if (sourceUser.roomId !== targetUser.roomId) {
+			return;
+		}
+
 		const shouldMute = Boolean(payload?.muted);
 		if (shouldMute) {
 			sourceUser.mutedUserKeys.add(targetUser.userKey);
@@ -624,12 +680,17 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		if (sourceUser.roomId !== targetUser.roomId) {
+			return;
+		}
+
 		const reason = String(payload?.reason || "other").slice(0, 40);
 		const details = String(payload?.details || "").slice(0, 500);
 
 		if (process.env.MONGO_URI) {
 			try {
 				await ModerationReport.create({
+					roomId: sourceUser.roomId,
 					reporterUserKey: sourceUser.userKey,
 					targetUserKey: targetUser.userKey,
 					reason,
@@ -653,12 +714,14 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
+		const departingRoomId = departingUser.roomId;
+
 		for (const connectedSocketId of Array.from(departingUser.connections)) {
 			disconnectUsers(socket.id, connectedSocketId);
 		}
 
 		users.delete(socket.id);
-		io.emit("world:user-left", { id: socket.id });
+		io.to(worldRoomId(departingRoomId)).emit("world:user-left", { id: socket.id });
 		await persistProfile(departingUser);
 	});
 });
@@ -667,6 +730,7 @@ app.get("/health", (_, res) => {
 	res.json({
 		status: "ok",
 		usersOnline: users.size,
+		roomsOnline: new Set(Array.from(users.values()).map((user) => user.roomId)).size,
 		mongoConfigured: Boolean(process.env.MONGO_URI),
 		zones: DEFAULT_ZONES.map((zone) => ({ id: zone.id, name: zone.name })),
 	});

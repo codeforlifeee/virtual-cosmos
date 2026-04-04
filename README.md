@@ -5,6 +5,7 @@ A realtime 2D multiplayer world where users move around, connect by proximity, a
 ## Implemented Features
 
 - Realtime movement with PixiJS avatars (WASD + Arrow keys)
+- Room ID based session isolation (users only see/interact inside their room)
 - Socket.IO multiplayer sync for join/move/leave
 - Proximity connect/disconnect logic
 - Proximity-gated text chat
@@ -53,6 +54,7 @@ Persistence is implemented in backend models:
 
 - `UserProfile`
   - `userKey`
+  - `lastRoomId`
   - `displayName`
   - `avatarColor`
   - `hat`
@@ -62,11 +64,13 @@ Persistence is implemented in backend models:
   - `blockedUserKeys`
   - `mutedUserKeys`
 - `ChatMessage`
+  - `roomId`
   - `fromUserKey`
   - `toUserKey`
   - `text`
   - `sentAt`
 - `ModerationReport`
+  - `roomId`
   - `reporterUserKey`
   - `targetUserKey`
   - `reason`
@@ -89,6 +93,12 @@ MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/virtual-cosm
 ```
 
 ## Local Development
+
+Room behavior:
+
+- Enter a Room ID on the join screen (example: `team-alpha`).
+- Only users in the same Room ID will be visible, connect by proximity, and chat/call.
+- Switching room in UI disconnects current room and lets you rejoin with a new Room ID.
 
 ### 1. Install
 
@@ -230,10 +240,12 @@ Frontend:
 1. Open two windows.
 2. Join with different profiles.
 3. Show movement sync.
-4. Move into same zone and show zone indicator.
-5. Show proximity chat enabling/disabling.
-6. Start voice and demonstrate spatial audio by moving.
-7. Start video call and show local/remote previews.
-8. Send emotes.
-9. Apply mute/block/report actions.
-10. Refresh one tab and show reconnect/resume.
+4. Join two different Room IDs and show they cannot see each other.
+5. Join same Room ID in two tabs and show they sync.
+6. Move into same zone and show zone indicator.
+7. Show proximity chat enabling/disabling.
+8. Start voice and demonstrate spatial audio by moving.
+9. Start video call and show local/remote previews.
+10. Send emotes.
+11. Apply mute/block/report actions.
+12. Refresh one tab and show reconnect/resume.

@@ -46,6 +46,16 @@ const readJson = (key, fallback) => {
   }
 }
 
+const safeRoomId = (value) => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '')
+    .slice(0, 32)
+
+  return normalized || 'lobby'
+}
+
 const toMediaErrorMessage = (error) => {
   const name = String(error?.name || 'UnknownError')
   if (name === 'NotAllowedError') {
@@ -73,6 +83,7 @@ function App() {
 
   const [joined, setJoined] = useState(false)
   const [displayName, setDisplayName] = useState(savedPrefs.displayName || `Cosmo-${Math.floor(Math.random() * 900 + 100)}`)
+  const [roomId, setRoomId] = useState(savedPrefs.roomId || 'lobby')
   const [avatarColor, setAvatarColor] = useState(savedPrefs.avatarColor || '#34d399')
   const [hat, setHat] = useState(savedPrefs.hat || 'none')
   const [badge, setBadge] = useState(savedPrefs.badge || 'none')
@@ -189,12 +200,13 @@ function App() {
       'cosmos-preferences',
       JSON.stringify({
         displayName,
+        roomId,
         avatarColor,
         hat,
         badge,
       }),
     )
-  }, [avatarColor, badge, displayName, hat])
+  }, [avatarColor, badge, displayName, hat, roomId])
 
   useEffect(() => {
     if (!selfUser) {
@@ -474,6 +486,7 @@ function App() {
       reconnectionDelay: 800,
       auth: {
         name: displayName.trim() || 'Cosmonaut',
+        roomId,
         userKey: storedUserKey,
         avatarColor,
         hat,
@@ -517,6 +530,7 @@ function App() {
             ? payload.config.iceServers
             : prev.iceServers,
       }))
+          setRoomId(payload.config?.roomId || roomId)
 
       const mapped = toUserMap(payload.users)
       setUsersSafe(mapped)
@@ -673,7 +687,7 @@ function App() {
       socket.disconnect()
       socketRef.current = null
     }
-  }, [avatarColor, badge, displayName, hat, joined])
+  }, [avatarColor, badge, displayName, hat, joined, roomId])
 
   useEffect(() => {
     if (!activeVoicePeerId) {
@@ -1173,6 +1187,26 @@ function App() {
     await startVideoCall(activeChatId)
   }
 
+  const handleEnterCosmos = () => {
+    setRoomId(safeRoomId(roomId))
+    setJoined(true)
+  }
+
+  const handleSwitchRoom = () => {
+    closeAllVoice()
+    socketRef.current?.disconnect()
+    setJoined(false)
+    setSocketOnline(false)
+    setConnectionLabel('Waiting')
+    setSelfId('')
+    setCurrentZoneId(null)
+    setUsersSafe({})
+    setConnectedUserIds([])
+    setActiveChatId('')
+    setMessagesByUser({})
+    setVoiceError('')
+  }
+
   return (
     <main className="app-shell">
       {!joined && (
@@ -1192,6 +1226,16 @@ function App() {
               onChange={(event) => setDisplayName(event.target.value)}
               className="input-base"
               placeholder="Enter your alias"
+            />
+
+            <label className="field-label" htmlFor="roomId">Room ID</label>
+            <input
+              id="roomId"
+              value={roomId}
+              maxLength={32}
+              onChange={(event) => setRoomId(event.target.value)}
+              className="input-base"
+              placeholder="e.g. team-alpha"
             />
 
             <div className="form-row">
@@ -1225,7 +1269,7 @@ function App() {
               </div>
             </div>
 
-            <button type="button" onClick={() => setJoined(true)} className="btn-primary">Enter Cosmos</button>
+            <button type="button" onClick={handleEnterCosmos} className="btn-primary">Enter Cosmos</button>
           </div>
         </section>
       )}
@@ -1237,6 +1281,7 @@ function App() {
           <p className="subtitle-text">
             Walk in, connect in range, and carry conversations with zone-aware interactions.
           </p>
+          <p className="subtitle-text mono">Room: {safeRoomId(roomId)}</p>
         </div>
 
         <div className="header-stats">
@@ -1248,6 +1293,7 @@ function App() {
             <div className="small-card mono">Users<strong>{Object.keys(users).length}</strong></div>
             <div className="small-card mono">Nearby<strong>{connectedUsers.length}</strong></div>
           </div>
+          <button className="btn-secondary" type="button" onClick={handleSwitchRoom}>Switch Room</button>
         </div>
       </header>
 
@@ -1262,6 +1308,7 @@ function App() {
 
           <div className="world-meta">
             <span className="meta-pill">Pilot <strong>{selfUser?.name || displayName}</strong></span>
+            <span className="meta-pill mono">Room ID: {safeRoomId(roomId)}</span>
             <span className="meta-pill mono">Current Zone: {currentZone?.name || 'Open Space'}</span>
             <span className="meta-pill mono">Active Call: {activeVoicePeerId ? `${activeCallMode.toUpperCase()} with ${users[activeVoicePeerId]?.name || 'Peer'}` : 'None'}</span>
           </div>
