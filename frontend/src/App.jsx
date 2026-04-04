@@ -46,6 +46,27 @@ const readJson = (key, fallback) => {
   }
 }
 
+const toMediaErrorMessage = (error) => {
+  const name = String(error?.name || 'UnknownError')
+  if (name === 'NotAllowedError') {
+    return 'Camera/microphone permission was denied by the browser.'
+  }
+
+  if (name === 'NotFoundError') {
+    return 'No camera device was found on this laptop.'
+  }
+
+  if (name === 'NotReadableError') {
+    return 'Camera is in use by another app (Zoom, Meet, Teams, etc.).'
+  }
+
+  if (name === 'OverconstrainedError') {
+    return 'Requested camera settings are not supported on this device.'
+  }
+
+  return 'Unable to access camera/microphone on this device.'
+}
+
 function App() {
   const [savedPrefs] = useState(() => readJson('cosmos-preferences', {}))
   const [savedPosition] = useState(() => readJson('cosmos-last-position', null))
@@ -302,14 +323,41 @@ function App() {
       localStreamRef.current = null
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video,
-    })
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('MediaDevicesUnavailable')
+    }
+
+    let stream
+    if (video) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: {
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        })
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: true,
+        })
+      }
+    } else {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      })
+    }
+
     localStreamRef.current = stream
 
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = video ? stream : null
+      if (video) {
+        localVideoRef.current.play().catch(() => {})
+      }
     }
 
     return stream
@@ -398,8 +446,8 @@ function App() {
       setActiveVoicePeerId(peerId)
       setActiveCallMode(mode)
       setVoiceError('')
-    } catch {
-      setVoiceError('Could not start call. Check camera/microphone permission.')
+    } catch (error) {
+      setVoiceError(toMediaErrorMessage(error))
       setActiveVoicePeerId('')
       setActiveCallMode('none')
     }
@@ -587,8 +635,8 @@ function App() {
           setRemoteVideoStream(null)
         }
         setVoiceError('')
-      } catch {
-        setVoiceError('Failed to accept call.')
+      } catch (error) {
+        setVoiceError(toMediaErrorMessage(error))
       }
     })
 
@@ -644,6 +692,9 @@ function App() {
     }
 
     remoteVideoRef.current.srcObject = remoteVideoStream || null
+    if (remoteVideoStream) {
+      remoteVideoRef.current.play().catch(() => {})
+    }
   }, [remoteVideoStream])
 
   useEffect(() => {
@@ -1244,6 +1295,7 @@ function App() {
                 ref={remoteVideoRef}
                 autoPlay
                 playsInline
+                muted
                 className={`video-preview ${remoteVideoStream ? '' : 'hidden'}`}
               ></video>
               {!remoteVideoStream && <p className="inline-note">No remote video</p>}
