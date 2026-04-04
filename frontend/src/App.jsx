@@ -4,6 +4,14 @@ import * as PIXI from 'pixi.js'
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000'
 const SPEED = 280
+const HATS = ['none', 'cap', 'halo', 'wizard']
+const BADGES = ['none', 'star', 'helper', 'captain']
+const EMOTE_OPTIONS = ['wave', 'thumbs', 'laugh']
+const EMOTE_LABELS = {
+  wave: 'WAVE',
+  thumbs: 'THUMBS',
+  laugh: 'LAUGH',
+}
 
 const MOVEMENT_KEYS = {
   w: [0, -1],
@@ -17,45 +25,169 @@ const MOVEMENT_KEYS = {
 }
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+const toUserMap = (list) => Object.fromEntries((list || []).map((user) => [user.id, user]))
 
-const toUserMap = (users) => Object.fromEntries(users.map((user) => [user.id, user]))
+const hexToNumber = (hex, fallback = 0x34d399) => {
+  const normalized = String(hex || '').replace('#', '')
+  const parsed = Number.parseInt(normalized, 16)
+  return Number.isNaN(parsed) ? fallback : parsed
+}
+
+const readJson = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) {
+      return fallback
+    }
+
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
 
 function App() {
+  const [savedPrefs] = useState(() => readJson('cosmos-preferences', {}))
+  const [savedPosition] = useState(() => readJson('cosmos-last-position', null))
+
   const [joined, setJoined] = useState(false)
-  const [displayName, setDisplayName] = useState(`Cosmo-${Math.floor(Math.random() * 900 + 100)}`)
+  const [displayName, setDisplayName] = useState(savedPrefs.displayName || `Cosmo-${Math.floor(Math.random() * 900 + 100)}`)
+  const [avatarColor, setAvatarColor] = useState(savedPrefs.avatarColor || '#34d399')
+  const [hat, setHat] = useState(savedPrefs.hat || 'none')
+  const [badge, setBadge] = useState(savedPrefs.badge || 'none')
+
   const [socketOnline, setSocketOnline] = useState(false)
+  const [connectionLabel, setConnectionLabel] = useState('Waiting')
   const [selfId, setSelfId] = useState('')
   const [worldConfig, setWorldConfig] = useState({
     worldWidth: 1600,
     worldHeight: 900,
     proximityRadius: 190,
+    zones: [],
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   })
+
   const [users, setUsers] = useState({})
   const [connectedUserIds, setConnectedUserIds] = useState([])
+  const [currentZoneId, setCurrentZoneId] = useState(null)
+  const [zoneNotice, setZoneNotice] = useState('')
+
   const [activeChatId, setActiveChatId] = useState('')
   const [messagesByUser, setMessagesByUser] = useState({})
   const [draftMessage, setDraftMessage] = useState('')
+  const [activeEmotes, setActiveEmotes] = useState({})
+
+  const [blockedUserKeys, setBlockedUserKeys] = useState([])
+  const [mutedUserKeys, setMutedUserKeys] = useState([])
+  const [reportReason, setReportReason] = useState('spam')
+  const [reportDetails, setReportDetails] = useState('')
+  const [reportAck, setReportAck] = useState('')
+
+  const [activeVoicePeerId, setActiveVoicePeerId] = useState('')
+  const [activeCallMode, setActiveCallMode] = useState('none')
+  const [remoteVideoStream, setRemoteVideoStream] = useState(null)
+  const [voiceError, setVoiceError] = useState('')
 
   const socketRef = useRef(null)
+  const usersRef = useRef({})
   const keyStateRef = useRef(new Set())
   const hostRef = useRef(null)
   const appRef = useRef(null)
   const worldRef = useRef(null)
   const arenaRef = useRef(null)
+  const zonesLayerRef = useRef(null)
+  const zoneLabelsRef = useRef(null)
   const avatarsRef = useRef(new Map())
   const selfIdRef = useRef('')
-  const latestSelfPosRef = useRef({ x: 0, y: 0 })
+  const activeVoicePeerIdRef = useRef('')
+  const emoteTimeoutsRef = useRef(new Map())
+  const peerConnectionsRef = useRef(new Map())
+  const remoteAudioElsRef = useRef(new Map())
+  const remoteVideoStreamsRef = useRef(new Map())
+  const localStreamRef = useRef(null)
+  const localVideoRef = useRef(null)
+  const remoteVideoRef = useRef(null)
+  const connectedUserIdsRef = useRef([])
+  const zoneMapRef = useRef({})
+
+  const setUsersSafe = (updater) => {
+    setUsers((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      usersRef.current = next
+      return next
+    })
+  }
 
   const selfUser = users[selfId]
-  const connectedUsers = useMemo(
-    () => connectedUserIds.map((userId) => users[userId]).filter(Boolean),
-    [connectedUserIds, users],
-  )
+  const connectedUsers = useMemo(() => connectedUserIds.map((id) => users[id]).filter(Boolean), [connectedUserIds, users])
+  const selectedUser = activeChatId ? users[activeChatId] : null
   const chatMessages = activeChatId ? messagesByUser[activeChatId] || [] : []
+  const zoneMap = useMemo(
+    () => Object.fromEntries((worldConfig.zones || []).map((zone) => [zone.id, zone])),
+    [worldConfig.zones],
+  )
+  const currentZone = currentZoneId ? zoneMap[currentZoneId] : null
+  const zoneCounts = useMemo(() => {
+    const counts = {}
+    for (const user of Object.values(users)) {
+      if (!user.zoneId) {
+        continue
+      }
+
+      counts[user.zoneId] = (counts[user.zoneId] || 0) + 1
+    }
+
+    return counts
+  }, [users])
+
+  const selectedUserMuted = Boolean(selectedUser && mutedUserKeys.includes(selectedUser.userId))
+  const selectedUserBlocked = Boolean(selectedUser && blockedUserKeys.includes(selectedUser.userId))
+
+  useEffect(() => {
+    usersRef.current = users
+  }, [users])
 
   useEffect(() => {
     selfIdRef.current = selfId
   }, [selfId])
+
+  useEffect(() => {
+    activeVoicePeerIdRef.current = activeVoicePeerId
+  }, [activeVoicePeerId])
+
+  useEffect(() => {
+    connectedUserIdsRef.current = connectedUserIds
+  }, [connectedUserIds])
+
+  useEffect(() => {
+    zoneMapRef.current = zoneMap
+  }, [zoneMap])
+
+  useEffect(() => {
+    localStorage.setItem(
+      'cosmos-preferences',
+      JSON.stringify({
+        displayName,
+        avatarColor,
+        hat,
+        badge,
+      }),
+    )
+  }, [avatarColor, badge, displayName, hat])
+
+  useEffect(() => {
+    if (!selfUser) {
+      return
+    }
+
+    localStorage.setItem(
+      'cosmos-last-position',
+      JSON.stringify({
+        x: selfUser.x,
+        y: selfUser.y,
+      }),
+    )
+  }, [selfUser])
 
   useEffect(() => {
     if (!connectedUserIds.length) {
@@ -69,52 +201,291 @@ function App() {
   }, [activeChatId, connectedUserIds])
 
   useEffect(() => {
-    if (!joined) {
+    if (!zoneNotice) {
       return
     }
 
-    const storedUserKey = sessionStorage.getItem('cosmos-user-key') || crypto.randomUUID()
-    sessionStorage.setItem('cosmos-user-key', storedUserKey)
+    const timer = window.setTimeout(() => setZoneNotice(''), 1800)
+    return () => window.clearTimeout(timer)
+  }, [zoneNotice])
+
+  const showEmote = (userId, emote) => {
+    setActiveEmotes((prev) => ({
+      ...prev,
+      [userId]: emote,
+    }))
+
+    const previous = emoteTimeoutsRef.current.get(userId)
+    if (previous) {
+      window.clearTimeout(previous)
+    }
+
+    const timer = window.setTimeout(() => {
+      setActiveEmotes((prev) => {
+        const next = { ...prev }
+        delete next[userId]
+        return next
+      })
+      emoteTimeoutsRef.current.delete(userId)
+    }, 1600)
+
+    emoteTimeoutsRef.current.set(userId, timer)
+  }
+
+  const closeVoicePeer = (peerId, notifyPeer = false) => {
+    const socket = socketRef.current
+    if (notifyPeer && socket) {
+      socket.emit('voice:hangup', { toUserId: peerId })
+    }
+
+    const pc = peerConnectionsRef.current.get(peerId)
+    if (pc) {
+      pc.close()
+      peerConnectionsRef.current.delete(peerId)
+    }
+
+    const audio = remoteAudioElsRef.current.get(peerId)
+    if (audio) {
+      audio.pause()
+      audio.srcObject = null
+      remoteAudioElsRef.current.delete(peerId)
+    }
+
+    remoteVideoStreamsRef.current.delete(peerId)
+    if (activeVoicePeerId === peerId) {
+      setRemoteVideoStream(null)
+    }
+
+    if (activeVoicePeerId === peerId) {
+      setActiveVoicePeerId('')
+      setActiveCallMode('none')
+    }
+  }
+
+  const closeAllVoice = () => {
+    for (const peerId of Array.from(peerConnectionsRef.current.keys())) {
+      closeVoicePeer(peerId, false)
+    }
+
+    if (localStreamRef.current) {
+      for (const track of localStreamRef.current.getTracks()) {
+        track.stop()
+      }
+      localStreamRef.current = null
+    }
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null
+    }
+
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null
+    }
+
+    remoteVideoStreamsRef.current.clear()
+    setRemoteVideoStream(null)
+
+    setActiveVoicePeerId('')
+    setActiveCallMode('none')
+  }
+
+  const ensureLocalMedia = async ({ video = false } = {}) => {
+    if (localStreamRef.current) {
+      const hasVideo = localStreamRef.current.getVideoTracks().length > 0
+      if ((video && hasVideo) || (!video && !hasVideo)) {
+        return localStreamRef.current
+      }
+
+      for (const track of localStreamRef.current.getTracks()) {
+        track.stop()
+      }
+      localStreamRef.current = null
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video,
+    })
+    localStreamRef.current = stream
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = video ? stream : null
+    }
+
+    return stream
+  }
+
+  const createPeerConnection = async (peerId) => {
+    let existing = peerConnectionsRef.current.get(peerId)
+    if (existing) {
+      return existing
+    }
+
+    const socket = socketRef.current
+    const pc = new RTCPeerConnection({ iceServers: worldConfig.iceServers || [] })
+
+    pc.onicecandidate = (event) => {
+      if (!event.candidate || !socket) {
+        return
+      }
+
+      socket.emit('voice:ice-candidate', {
+        toUserId: peerId,
+        candidate: event.candidate,
+      })
+    }
+
+    pc.ontrack = (event) => {
+      const stream = event.streams?.[0]
+      if (!stream) {
+        return
+      }
+
+      if (stream.getAudioTracks().length > 0) {
+      let audio = remoteAudioElsRef.current.get(peerId)
+      if (!audio) {
+        audio = new Audio()
+        audio.autoplay = true
+        remoteAudioElsRef.current.set(peerId, audio)
+      }
+
+      audio.srcObject = stream
+      audio.play().catch(() => {})
+      }
+
+      if (stream.getVideoTracks().length > 0) {
+        remoteVideoStreamsRef.current.set(peerId, stream)
+        if (activeVoicePeerIdRef.current === peerId) {
+          setRemoteVideoStream(stream)
+        }
+      }
+    }
+
+    pc.onconnectionstatechange = () => {
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+        closeVoicePeer(peerId, false)
+      }
+    }
+
+    const localStream = localStreamRef.current
+    if (localStream) {
+      for (const track of localStream.getTracks()) {
+        pc.addTrack(track, localStream)
+      }
+    }
+
+    peerConnectionsRef.current.set(peerId, pc)
+    existing = pc
+    return existing
+  }
+
+  const startCall = async (peerId, mode) => {
+    if (!peerId || !connectedUserIds.includes(peerId)) {
+      return
+    }
+
+    try {
+      await ensureLocalMedia({ video: mode === 'video' })
+      const pc = await createPeerConnection(peerId)
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+
+      socketRef.current?.emit('voice:offer', {
+        toUserId: peerId,
+        sdp: offer,
+      })
+
+      setActiveVoicePeerId(peerId)
+      setActiveCallMode(mode)
+      setVoiceError('')
+    } catch {
+      setVoiceError('Could not start call. Check camera/microphone permission.')
+      setActiveVoicePeerId('')
+      setActiveCallMode('none')
+    }
+  }
+
+  const startVoiceCall = async (peerId) => {
+    await startCall(peerId, 'voice')
+  }
+
+  const startVideoCall = async (peerId) => {
+    await startCall(peerId, 'video')
+  }
+
+  useEffect(() => {
+    if (!joined) {
+      return undefined
+    }
+
+    const storedUserKey = localStorage.getItem('cosmos-user-key') || crypto.randomUUID()
+    localStorage.setItem('cosmos-user-key', storedUserKey)
 
     const socket = io(SOCKET_URL, {
       transports: ['websocket'],
+      reconnection: true,
+      reconnectionDelay: 800,
       auth: {
         name: displayName.trim() || 'Cosmonaut',
         userKey: storedUserKey,
+        avatarColor,
+        hat,
+        badge,
+        lastX: savedPosition?.x,
+        lastY: savedPosition?.y,
       },
     })
 
     socketRef.current = socket
+    setConnectionLabel('Connecting...')
 
     socket.on('connect', () => {
       setSocketOnline(true)
+      setConnectionLabel('Realtime Connected')
     })
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
       setSocketOnline(false)
       setConnectedUserIds([])
+      setConnectionLabel(reason === 'io client disconnect' ? 'Disconnected' : 'Reconnecting...')
+      closeAllVoice()
+    })
+
+    socket.io.on('reconnect_attempt', (attempt) => {
+      setConnectionLabel(`Reconnecting (${attempt})`)
+    })
+
+    socket.io.on('reconnect', () => {
+      setConnectionLabel('Reconnected')
+      setSocketOnline(true)
     })
 
     socket.on('world:init', (payload) => {
       setSelfId(payload.selfId)
-      setWorldConfig(payload.config)
-      setUsers(toUserMap(payload.users))
-      const current = payload.users.find((user) => user.id === payload.selfId)
-      if (current) {
-        latestSelfPosRef.current = { x: current.x, y: current.y }
-      }
+      setWorldConfig((prev) => ({
+        ...prev,
+        ...payload.config,
+        iceServers:
+          Array.isArray(payload.config?.iceServers) && payload.config.iceServers.length
+            ? payload.config.iceServers
+            : prev.iceServers,
+      }))
+
+      const mapped = toUserMap(payload.users)
+      setUsersSafe(mapped)
+      const me = mapped[payload.selfId]
+      setCurrentZoneId(me?.zoneId || null)
     })
 
     socket.on('world:user-joined', (user) => {
-      setUsers((prev) => ({ ...prev, [user.id]: user }))
+      setUsersSafe((prev) => ({
+        ...prev,
+        [user.id]: user,
+      }))
     })
 
-    socket.on('world:user-moved', (user) => {
-      if (user.id === selfIdRef.current) {
-        latestSelfPosRef.current = { x: user.x, y: user.y }
-      }
-
-      setUsers((prev) => ({
+    socket.on('world:user-updated', (user) => {
+      setUsersSafe((prev) => ({
         ...prev,
         [user.id]: {
           ...(prev[user.id] || {}),
@@ -123,8 +494,22 @@ function App() {
       }))
     })
 
+    socket.on('world:user-moved', (user) => {
+      setUsersSafe((prev) => ({
+        ...prev,
+        [user.id]: {
+          ...(prev[user.id] || {}),
+          ...user,
+        },
+      }))
+
+      if (user.id === selfIdRef.current) {
+        setCurrentZoneId(user.zoneId || null)
+      }
+    })
+
     socket.on('world:user-left', ({ id }) => {
-      setUsers((prev) => {
+      setUsersSafe((prev) => {
         const next = { ...prev }
         delete next[id]
         return next
@@ -136,6 +521,16 @@ function App() {
         delete next[id]
         return next
       })
+      closeVoicePeer(id, false)
+    })
+
+    socket.on('zone:changed', ({ zoneId }) => {
+      setCurrentZoneId(zoneId || null)
+      if (zoneId && zoneMapRef.current[zoneId]) {
+        setZoneNotice(`Entered ${zoneMapRef.current[zoneId].name}`)
+      } else {
+        setZoneNotice('Left named zone')
+      }
     })
 
     socket.on('proximity:snapshot', (payload) => {
@@ -152,11 +547,133 @@ function App() {
       }))
     })
 
+    socket.on('emote:show', (payload) => {
+      showEmote(payload.fromId, payload.emote)
+    })
+
+    socket.on('moderation:state', (payload) => {
+      setBlockedUserKeys(payload.blockedUserKeys || [])
+      setMutedUserKeys(payload.mutedUserKeys || [])
+    })
+
+    socket.on('moderation:report:ack', (payload) => {
+      const target = usersRef.current[payload.targetUserId]
+      const targetName = target?.name || 'user'
+      setReportAck(`Report submitted for ${targetName} (${payload.reason}).`)
+      setReportDetails('')
+    })
+
+    socket.on('voice:offer', async ({ fromId, sdp }) => {
+      if (!connectedUserIdsRef.current.includes(fromId)) {
+        return
+      }
+
+      try {
+        const hasVideo = String(sdp?.sdp || '').includes('m=video')
+        await ensureLocalMedia({ video: hasVideo })
+        const pc = await createPeerConnection(fromId)
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        socket.emit('voice:answer', {
+          toUserId: fromId,
+          sdp: answer,
+        })
+
+        setActiveVoicePeerId(fromId)
+        setActiveCallMode(hasVideo ? 'video' : 'voice')
+        if (!hasVideo) {
+          setRemoteVideoStream(null)
+        }
+        setVoiceError('')
+      } catch {
+        setVoiceError('Failed to accept call.')
+      }
+    })
+
+    socket.on('voice:answer', async ({ fromId, sdp }) => {
+      const pc = peerConnectionsRef.current.get(fromId)
+      if (!pc) {
+        return
+      }
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+        const hasVideo = String(sdp?.sdp || '').includes('m=video')
+        setActiveCallMode(hasVideo ? 'video' : 'voice')
+      } catch {
+        setVoiceError('Call answer could not be applied.')
+      }
+    })
+
+    socket.on('voice:ice-candidate', async ({ fromId, candidate }) => {
+      try {
+        const pc = await createPeerConnection(fromId)
+        await pc.addIceCandidate(candidate)
+      } catch {
+        setVoiceError('Call candidate sync failed.')
+      }
+    })
+
+    socket.on('voice:hangup', ({ fromId }) => {
+      closeVoicePeer(fromId, false)
+    })
+
     return () => {
+      closeAllVoice()
       socket.disconnect()
       socketRef.current = null
     }
-  }, [displayName, joined])
+  }, [avatarColor, badge, displayName, hat, joined])
+
+  useEffect(() => {
+    if (!activeVoicePeerId) {
+      return
+    }
+
+    if (!connectedUserIds.includes(activeVoicePeerId)) {
+      closeVoicePeer(activeVoicePeerId, true)
+      setVoiceError('Call ended because proximity was lost.')
+    }
+  }, [activeVoicePeerId, connectedUserIds])
+
+  useEffect(() => {
+    if (!remoteVideoRef.current) {
+      return
+    }
+
+    remoteVideoRef.current.srcObject = remoteVideoStream || null
+  }, [remoteVideoStream])
+
+  useEffect(() => {
+    if (!activeVoicePeerId) {
+      setRemoteVideoStream(null)
+      return
+    }
+
+    setRemoteVideoStream(remoteVideoStreamsRef.current.get(activeVoicePeerId) || null)
+  }, [activeVoicePeerId])
+
+  useEffect(() => {
+    if (!activeVoicePeerId || !selfUser) {
+      return
+    }
+
+    const peer = users[activeVoicePeerId]
+    const audio = remoteAudioElsRef.current.get(activeVoicePeerId)
+    if (!peer || !audio) {
+      return
+    }
+
+    const dx = selfUser.x - peer.x
+    const dy = selfUser.y - peer.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    const attenuation = clamp(1 - dist / worldConfig.proximityRadius, 0, 1)
+    const muted = mutedUserKeys.includes(peer.userId)
+    audio.volume = muted ? 0 : attenuation * attenuation
+  }, [activeVoicePeerId, mutedUserKeys, selfUser, users, worldConfig.proximityRadius])
 
   useEffect(() => {
     if (!joined) {
@@ -171,7 +688,7 @@ function App() {
 
       if (event.target instanceof HTMLElement) {
         const tag = event.target.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA') {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
           return
         }
       }
@@ -207,8 +724,8 @@ function App() {
       const delta = (now - previousTime) / 1000
       previousTime = now
 
-      const self = users[selfId]
-      if (self) {
+      const me = usersRef.current[selfIdRef.current]
+      if (me) {
         let axisX = 0
         let axisY = 0
 
@@ -218,26 +735,24 @@ function App() {
         }
 
         if (axisX !== 0 || axisY !== 0) {
-          const magnitude = Math.sqrt(axisX * axisX + axisY * axisY) || 1
-          const normalizedX = axisX / magnitude
-          const normalizedY = axisY / magnitude
+          const mag = Math.sqrt(axisX * axisX + axisY * axisY) || 1
+          const nextX = clamp(me.x + (axisX / mag) * SPEED * delta, 0, worldConfig.worldWidth)
+          const nextY = clamp(me.y + (axisY / mag) * SPEED * delta, 0, worldConfig.worldHeight)
 
-          const nextX = clamp(self.x + normalizedX * SPEED * delta, 0, worldConfig.worldWidth)
-          const nextY = clamp(self.y + normalizedY * SPEED * delta, 0, worldConfig.worldHeight)
-
-          latestSelfPosRef.current = { x: nextX, y: nextY }
-
-          setUsers((prev) => ({
+          setUsersSafe((prev) => ({
             ...prev,
-            [selfId]: {
-              ...prev[selfId],
+            [selfIdRef.current]: {
+              ...prev[selfIdRef.current],
               x: nextX,
               y: nextY,
             },
           }))
 
-          if (now - lastSentAt > 40) {
-            socketRef.current?.emit('player:move', { x: nextX, y: nextY })
+          if (now - lastSentAt > 45) {
+            socketRef.current?.emit('player:move', {
+              x: nextX,
+              y: nextY,
+            })
             lastSentAt = now
           }
         }
@@ -248,10 +763,8 @@ function App() {
 
     animationFrameId = requestAnimationFrame(step)
 
-    return () => {
-      cancelAnimationFrame(animationFrameId)
-    }
-  }, [joined, selfId, users, worldConfig.worldHeight, worldConfig.worldWidth])
+    return () => cancelAnimationFrame(animationFrameId)
+  }, [joined, selfId, worldConfig.worldHeight, worldConfig.worldWidth])
 
   useEffect(() => {
     if (!joined || !hostRef.current) {
@@ -264,7 +777,10 @@ function App() {
       const app = appRef.current
       const world = worldRef.current
       const arena = arenaRef.current
-      if (!app || !world || !arena) {
+      const zonesLayer = zonesLayerRef.current
+      const zoneLabels = zoneLabelsRef.current
+
+      if (!app || !world || !arena || !zonesLayer || !zoneLabels) {
         return
       }
 
@@ -283,14 +799,13 @@ function App() {
       )
 
       arena.clear()
-      arena.beginFill(0x072734, 1)
-      arena.drawRoundedRect(0, 0, worldConfig.worldWidth, worldConfig.worldHeight, 26)
+      arena.beginFill(0xe6edf4, 1)
+      arena.drawRoundedRect(0, 0, worldConfig.worldWidth, worldConfig.worldHeight, 24)
       arena.endFill()
+      arena.lineStyle(3, 0x2f4963, 0.55)
+      arena.drawRoundedRect(0, 0, worldConfig.worldWidth, worldConfig.worldHeight, 24)
 
-      arena.lineStyle(3, 0x82f6d8, 0.55)
-      arena.drawRoundedRect(0, 0, worldConfig.worldWidth, worldConfig.worldHeight, 26)
-
-      arena.lineStyle(1, 0x1e4958, 0.52)
+      arena.lineStyle(1, 0x94a7bb, 0.45)
       for (let x = 80; x < worldConfig.worldWidth; x += 80) {
         arena.moveTo(x, 0)
         arena.lineTo(x, worldConfig.worldHeight)
@@ -299,6 +814,30 @@ function App() {
       for (let y = 80; y < worldConfig.worldHeight; y += 80) {
         arena.moveTo(0, y)
         arena.lineTo(worldConfig.worldWidth, y)
+      }
+
+      zonesLayer.clear()
+      zoneLabels.removeChildren()
+      for (const zone of worldConfig.zones || []) {
+        const zoneColor = hexToNumber(zone.color, 0xd3c5a0)
+        zonesLayer.beginFill(zoneColor, 0.14)
+        zonesLayer.drawRoundedRect(zone.x, zone.y, zone.width, zone.height, 18)
+        zonesLayer.endFill()
+
+        zonesLayer.lineStyle(2, zoneColor, 0.5)
+        zonesLayer.drawRoundedRect(zone.x, zone.y, zone.width, zone.height, 18)
+
+        const label = new PIXI.Text({
+          text: zone.name,
+          style: {
+            fill: 0x30465f,
+            fontFamily: 'IBM Plex Mono',
+            fontSize: 14,
+            fontWeight: '700',
+          },
+        })
+        label.position.set(zone.x + 12, zone.y + 10)
+        zoneLabels.addChild(label)
       }
     }
 
@@ -319,12 +858,19 @@ function App() {
 
       const world = new PIXI.Container()
       const arena = new PIXI.Graphics()
+      const zonesLayer = new PIXI.Graphics()
+      const zoneLabels = new PIXI.Container()
+
       world.addChild(arena)
+      world.addChild(zonesLayer)
+      world.addChild(zoneLabels)
       app.stage.addChild(world)
 
       appRef.current = app
       worldRef.current = world
       arenaRef.current = arena
+      zonesLayerRef.current = zonesLayer
+      zoneLabelsRef.current = zoneLabels
 
       drawArena()
       app.renderer.on('resize', drawArena)
@@ -344,8 +890,10 @@ function App() {
       appRef.current = null
       worldRef.current = null
       arenaRef.current = null
+      zonesLayerRef.current = null
+      zoneLabelsRef.current = null
     }
-  }, [joined, worldConfig.worldHeight, worldConfig.worldWidth])
+  }, [joined, worldConfig.worldHeight, worldConfig.worldWidth, worldConfig.zones])
 
   useEffect(() => {
     const world = worldRef.current
@@ -353,14 +901,42 @@ function App() {
       return
     }
 
-    const avatars = avatarsRef.current
-    const activeUserIds = new Set(Object.keys(users))
+    const drawHat = (graphic, user) => {
+      graphic.clear()
+      const bodyColor = hexToNumber(user.avatarColor, 0x34d399)
 
-    for (const [userId, avatar] of avatars.entries()) {
-      if (!activeUserIds.has(userId)) {
+      if (user.hat === 'cap') {
+        graphic.beginFill(0x284760, 1)
+        graphic.drawRoundedRect(-14, -23, 28, 8, 3)
+        graphic.endFill()
+        graphic.beginFill(bodyColor, 0.9)
+        graphic.drawCircle(10, -19, 3)
+        graphic.endFill()
+      }
+
+      if (user.hat === 'halo') {
+        graphic.lineStyle(3, 0xf6b84e, 1)
+        graphic.drawEllipse(0, -22, 13, 4)
+      }
+
+      if (user.hat === 'wizard') {
+        graphic.beginFill(0x50366f, 1)
+        graphic.moveTo(-12, -14)
+        graphic.lineTo(0, -34)
+        graphic.lineTo(12, -14)
+        graphic.closePath()
+        graphic.endFill()
+      }
+    }
+
+    const avatars = avatarsRef.current
+    const activeIds = new Set(Object.keys(users))
+
+    for (const [id, avatar] of avatars.entries()) {
+      if (!activeIds.has(id)) {
         world.removeChild(avatar.container)
         avatar.container.destroy({ children: true })
-        avatars.delete(userId)
+        avatars.delete(id)
       }
     }
 
@@ -370,51 +946,83 @@ function App() {
         const container = new PIXI.Container()
         const ring = new PIXI.Graphics()
         const body = new PIXI.Graphics()
-        const label = new PIXI.Text({
-          text: user.name,
+        const hatGraphic = new PIXI.Graphics()
+        const badgeLabel = new PIXI.Text({
+          text: '',
           style: {
-            fill: 0xd6fff3,
-            fontFamily: 'Space Grotesk',
-            fontSize: 16,
-            fontWeight: '600',
+            fill: 0x2b3848,
+            fontFamily: 'IBM Plex Mono',
+            fontSize: 10,
+            fontWeight: '700',
           },
         })
 
-        label.anchor.set(0.5, 1)
-        label.y = -20
+        badgeLabel.anchor.set(0.5, 0)
+        badgeLabel.y = 15
+
+        const nameLabel = new PIXI.Text({
+          text: user.name,
+          style: {
+            fill: 0x173047,
+            fontFamily: 'Manrope',
+            fontSize: 14,
+            fontWeight: '700',
+          },
+        })
+        nameLabel.anchor.set(0.5, 1)
+        nameLabel.y = -20
+
+        const emoteLabel = new PIXI.Text({
+          text: '',
+          style: {
+            fill: 0x1d2f44,
+            fontFamily: 'IBM Plex Mono',
+            fontSize: 11,
+            fontWeight: '700',
+          },
+        })
+        emoteLabel.anchor.set(0.5, 1)
+        emoteLabel.y = -40
 
         container.addChild(ring)
         container.addChild(body)
-        container.addChild(label)
+        container.addChild(hatGraphic)
+        container.addChild(nameLabel)
+        container.addChild(badgeLabel)
+        container.addChild(emoteLabel)
         world.addChild(container)
 
-        avatar = { container, ring, body, label }
+        avatar = { container, ring, body, hatGraphic, nameLabel, badgeLabel, emoteLabel }
         avatars.set(user.id, avatar)
       }
 
       const isSelf = user.id === selfId
-      const isConnected = connectedUserIds.includes(user.id)
-      const color = isSelf ? 0x34d399 : isConnected ? 0xfbbf24 : 0x7dd3fc
+      const connected = connectedUserIds.includes(user.id)
+      const baseColor = hexToNumber(user.avatarColor, isSelf ? 0x34d399 : 0x67a1cb)
 
       avatar.ring.clear()
-      avatar.ring.lineStyle(2, color, isSelf ? 0.3 : 0.17)
+      avatar.ring.lineStyle(2, 0x2f4963, isSelf || connected ? 0.26 : 0.1)
       avatar.ring.drawCircle(0, 0, worldConfig.proximityRadius)
-      avatar.ring.visible = isSelf || isConnected
+      avatar.ring.visible = isSelf || connected
 
       avatar.body.clear()
-      avatar.body.beginFill(color, 1)
+      avatar.body.beginFill(baseColor, 1)
       avatar.body.drawCircle(0, 0, isSelf ? 15 : 12)
       avatar.body.endFill()
 
-      avatar.label.text = user.name
+      drawHat(avatar.hatGraphic, user)
+
+      avatar.nameLabel.text = user.name
+      avatar.badgeLabel.text = user.badge && user.badge !== 'none' ? user.badge.toUpperCase() : ''
+      avatar.emoteLabel.text = activeEmotes[user.id] ? EMOTE_LABELS[activeEmotes[user.id]] : ''
+
       avatar.container.position.set(user.x, user.y)
     }
-  }, [connectedUserIds, selfId, users, worldConfig.proximityRadius])
+  }, [activeEmotes, connectedUserIds, selfId, users, worldConfig.proximityRadius])
 
   const submitMessage = (event) => {
     event.preventDefault()
-
-    if (!activeChatId || !draftMessage.trim() || !connectedUserIds.includes(activeChatId)) {
+    if (!activeChatId || !draftMessage.trim() || !connectedUserIds.includes(activeChatId) || selectedUserBlocked) {
       return
     }
 
@@ -422,8 +1030,97 @@ function App() {
       toUserId: activeChatId,
       text: draftMessage.trim(),
     })
-
     setDraftMessage('')
+  }
+
+  const submitProfileUpdate = () => {
+    socketRef.current?.emit('user:profile:update', {
+      name: displayName,
+      avatarColor,
+      hat,
+      badge,
+    })
+  }
+
+  const sendEmote = (emote) => {
+    if (!activeChatId || !connectedUserIds.includes(activeChatId)) {
+      return
+    }
+
+    socketRef.current?.emit('emote:send', {
+      toUserId: activeChatId,
+      emote,
+    })
+  }
+
+  const toggleMute = () => {
+    if (!selectedUser) {
+      return
+    }
+
+    socketRef.current?.emit('moderation:mute', {
+      targetUserId: selectedUser.id,
+      muted: !selectedUserMuted,
+    })
+  }
+
+  const toggleBlock = () => {
+    if (!selectedUser) {
+      return
+    }
+
+    socketRef.current?.emit('moderation:block', {
+      targetUserId: selectedUser.id,
+      blocked: !selectedUserBlocked,
+    })
+  }
+
+  const submitReport = () => {
+    if (!selectedUser) {
+      return
+    }
+
+    socketRef.current?.emit('moderation:report', {
+      targetUserId: selectedUser.id,
+      reason: reportReason,
+      details: reportDetails,
+    })
+  }
+
+  const toggleVoice = async () => {
+    if (!activeChatId || !connectedUserIds.includes(activeChatId)) {
+      return
+    }
+
+    if (activeVoicePeerId === activeChatId && activeCallMode === 'voice') {
+      closeVoicePeer(activeChatId, true)
+      setVoiceError('')
+      return
+    }
+
+    if (activeVoicePeerId) {
+      closeVoicePeer(activeVoicePeerId, true)
+    }
+
+    await startVoiceCall(activeChatId)
+  }
+
+  const toggleVideo = async () => {
+    if (!activeChatId || !connectedUserIds.includes(activeChatId)) {
+      return
+    }
+
+    if (activeVoicePeerId === activeChatId && activeCallMode === 'video') {
+      closeVoicePeer(activeChatId, true)
+      setVoiceError('')
+      return
+    }
+
+    if (activeVoicePeerId) {
+      closeVoicePeer(activeVoicePeerId, true)
+    }
+
+    await startVideoCall(activeChatId)
   }
 
   return (
@@ -434,12 +1131,10 @@ function App() {
             <p className="eyebrow mono">Virtual Cosmos</p>
             <h1 className="title-main">Step Into The Commons</h1>
             <p className="subtitle-text">
-              Move with WASD or Arrow keys. Chat turns on only when you are close to other users.
+              Realtime movement, proximity chat, voice, and social controls in one shared map.
             </p>
 
-            <label className="field-label" htmlFor="displayName">
-              Display Name
-            </label>
+            <label className="field-label" htmlFor="displayName">Display Name</label>
             <input
               id="displayName"
               value={displayName}
@@ -449,13 +1144,38 @@ function App() {
               placeholder="Enter your alias"
             />
 
-            <button
-              type="button"
-              onClick={() => setJoined(true)}
-              className="btn-primary"
-            >
-              Enter Cosmos
-            </button>
+            <div className="form-row">
+              <div>
+                <label className="field-label" htmlFor="avatarColor">Avatar Color</label>
+                <input
+                  id="avatarColor"
+                  type="color"
+                  value={avatarColor}
+                  onChange={(event) => setAvatarColor(event.target.value)}
+                  className="input-color"
+                />
+              </div>
+
+              <div>
+                <label className="field-label" htmlFor="hat">Hat</label>
+                <select id="hat" value={hat} onChange={(event) => setHat(event.target.value)} className="input-base compact">
+                  {HATS.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="field-label" htmlFor="badge">Badge</label>
+                <select id="badge" value={badge} onChange={(event) => setBadge(event.target.value)} className="input-base compact">
+                  {BADGES.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <button type="button" onClick={() => setJoined(true)} className="btn-primary">Enter Cosmos</button>
           </div>
         </section>
       )}
@@ -463,48 +1183,74 @@ function App() {
       <header className="surface header-surface fade-up">
         <div>
           <p className="eyebrow mono">Proximity-Driven World</p>
-          <h2 className="title-main compact">Neighborhood Voice Space</h2>
+          <h2 className="title-main compact">Human-Crafted Collaboration Space</h2>
           <p className="subtitle-text">
-            Walk near people to auto-open a private channel. Walk away and the channel closes.
+            Walk in, connect in range, and carry conversations with zone-aware interactions.
           </p>
         </div>
 
         <div className="header-stats">
           <div className={`status-pill mono ${socketOnline ? 'online' : 'offline'}`}>
             <span className="status-dot"></span>
-            {socketOnline ? 'Socket Online' : 'Socket Offline'}
+            {connectionLabel}
           </div>
-
           <div className="stats-row">
-            <div className="small-card mono">
-              Users
-              <strong>{Object.keys(users).length}</strong>
-            </div>
-            <div className="small-card mono">
-              Nearby
-              <strong>{connectedUsers.length}</strong>
-            </div>
+            <div className="small-card mono">Users<strong>{Object.keys(users).length}</strong></div>
+            <div className="small-card mono">Nearby<strong>{connectedUsers.length}</strong></div>
           </div>
         </div>
       </header>
 
       <section className="layout-grid">
-        <div className="surface world-card fade-up delay-1">
+        <section className="surface world-card fade-up delay-1">
           <div className="world-toolbar">
             <p className="mono">Movement: WASD / Arrow Keys</p>
-            <p className="mono">Radius chat: {worldConfig.proximityRadius}px</p>
+            <p className="mono">Proximity Radius: {worldConfig.proximityRadius}px</p>
           </div>
 
           <div ref={hostRef} className="cosmos-canvas"></div>
 
           <div className="world-meta">
-            <span className="meta-pill">
-              Pilot <strong>{selfUser?.name || displayName}</strong>
-            </span>
-            <span className="meta-pill mono">In Space {Object.keys(users).length}</span>
-            <span className="meta-pill mono">Connected {connectedUsers.length}</span>
+            <span className="meta-pill">Pilot <strong>{selfUser?.name || displayName}</strong></span>
+            <span className="meta-pill mono">Current Zone: {currentZone?.name || 'Open Space'}</span>
+            <span className="meta-pill mono">Active Call: {activeVoicePeerId ? `${activeCallMode.toUpperCase()} with ${users[activeVoicePeerId]?.name || 'Peer'}` : 'None'}</span>
           </div>
-        </div>
+
+          {zoneNotice && <p className="zone-notice mono">{zoneNotice}</p>}
+
+          <div className="zones-grid">
+            {(worldConfig.zones || []).map((zone) => (
+              <div key={zone.id} className={`zone-chip ${currentZoneId === zone.id ? 'active' : ''}`}>
+                <span>{zone.name}</span>
+                <strong className="mono">{zoneCounts[zone.id] || 0}</strong>
+              </div>
+            ))}
+          </div>
+
+          <div className="video-strip">
+            <div className="video-box">
+              <p className="mono video-title">You</p>
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`video-preview ${activeCallMode === 'video' ? '' : 'hidden'}`}
+              ></video>
+              {activeCallMode !== 'video' && <p className="inline-note">Camera off</p>}
+            </div>
+            <div className="video-box">
+              <p className="mono video-title">Peer</p>
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={`video-preview ${remoteVideoStream ? '' : 'hidden'}`}
+              ></video>
+              {!remoteVideoStream && <p className="inline-note">No remote video</p>}
+            </div>
+          </div>
+        </section>
 
         <aside className="surface chat-card fade-up delay-2">
           <p className="eyebrow mono">Nearby Connections</p>
@@ -522,32 +1268,32 @@ function App() {
               ))}
             </div>
           ) : (
-            <p className="empty-note">
-              Move closer to another avatar to auto-connect and unlock chat.
-            </p>
+            <p className="empty-note">Move closer to another avatar to unlock text, voice, and video channels.</p>
           )}
 
           <div className="message-list">
             {chatMessages.length > 0 ? (
-              chatMessages.map((message, index) => {
-                const outgoing = message.fromId === selfId
+              chatMessages
+                .filter((message) => {
+                  const isIncoming = message.fromId !== selfId
+                  if (!isIncoming) {
+                    return true
+                  }
 
-                return (
-                  <div
-                    key={`${message.sentAt}-${index}`}
-                    className={`bubble ${outgoing ? 'outgoing' : 'incoming'}`}
-                  >
-                    <p>{message.text}</p>
-                    <p className="mono bubble-time">
-                      {new Date(message.sentAt).toLocaleTimeString()}
-                    </p>
-                  </div>
-                )
-              })
+                  const sender = users[message.fromId]
+                  return !sender || !mutedUserKeys.includes(sender.userId)
+                })
+                .map((message, index) => {
+                  const outgoing = message.fromId === selfId
+                  return (
+                    <div key={`${message.sentAt}-${index}`} className={`bubble ${outgoing ? 'outgoing' : 'incoming'}`}>
+                      <p>{message.text}</p>
+                      <p className="mono bubble-time">{new Date(message.sentAt).toLocaleTimeString()}</p>
+                    </div>
+                  )
+                })
             ) : (
-              <p className="empty-chat">
-                {activeChatId ? 'Say hello while you are in range.' : 'No active conversation yet.'}
-              </p>
+              <p className="empty-chat">{activeChatId ? 'Say hello while you are in range.' : 'No active conversation yet.'}</p>
             )}
           </div>
 
@@ -555,19 +1301,91 @@ function App() {
             <input
               value={draftMessage}
               maxLength={300}
-              disabled={!activeChatId}
+              disabled={!activeChatId || selectedUserBlocked}
               onChange={(event) => setDraftMessage(event.target.value)}
               className="input-base compact"
-              placeholder={activeChatId ? 'Type your message...' : 'Chat unavailable until proximity connect'}
+              placeholder={
+                !activeChatId
+                  ? 'Chat unavailable until proximity connect'
+                  : selectedUserBlocked
+                    ? 'Unblock this user to send messages'
+                    : 'Type your message...'
+              }
             />
-            <button
-              type="submit"
-              disabled={!activeChatId || !draftMessage.trim()}
-              className="btn-send"
-            >
-              Send
-            </button>
+            <button type="submit" disabled={!activeChatId || !draftMessage.trim() || selectedUserBlocked} className="btn-send">Send</button>
           </form>
+
+          <div className="panel-row">
+            <button className="btn-secondary" type="button" disabled={!activeChatId} onClick={toggleVoice}>
+              {activeVoicePeerId === activeChatId && activeCallMode === 'voice' ? 'End Voice' : 'Start Voice'}
+            </button>
+            <button className="btn-secondary" type="button" disabled={!activeChatId} onClick={toggleVideo}>
+              {activeVoicePeerId === activeChatId && activeCallMode === 'video' ? 'End Video' : 'Start Video'}
+            </button>
+            {voiceError && <span className="inline-note">{voiceError}</span>}
+          </div>
+
+          <div className="emote-row">
+            {EMOTE_OPTIONS.map((emote) => (
+              <button
+                key={emote}
+                type="button"
+                disabled={!activeChatId || !connectedUserIds.includes(activeChatId)}
+                className="btn-emote"
+                onClick={() => sendEmote(emote)}
+              >
+                {EMOTE_LABELS[emote]}
+              </button>
+            ))}
+          </div>
+
+          <div className="moderation-box">
+            <p className="eyebrow mono">Moderation</p>
+            <div className="panel-row">
+              <button className="btn-secondary" type="button" disabled={!selectedUser} onClick={toggleMute}>
+                {selectedUserMuted ? 'Unmute User' : 'Mute User'}
+              </button>
+              <button className="btn-danger" type="button" disabled={!selectedUser} onClick={toggleBlock}>
+                {selectedUserBlocked ? 'Unblock User' : 'Block User'}
+              </button>
+            </div>
+
+            <div className="report-row">
+              <select className="input-base compact" value={reportReason} onChange={(event) => setReportReason(event.target.value)}>
+                <option value="spam">spam</option>
+                <option value="abuse">abuse</option>
+                <option value="harassment">harassment</option>
+                <option value="other">other</option>
+              </select>
+              <input
+                className="input-base compact"
+                value={reportDetails}
+                onChange={(event) => setReportDetails(event.target.value)}
+                placeholder="Optional report details"
+                maxLength={200}
+              />
+              <button type="button" className="btn-send" disabled={!selectedUser} onClick={submitReport}>Report</button>
+            </div>
+            {reportAck && <p className="inline-note">{reportAck}</p>}
+          </div>
+
+          <div className="profile-box">
+            <p className="eyebrow mono">Profile Customization</p>
+            <div className="form-row">
+              <input type="color" value={avatarColor} className="input-color" onChange={(event) => setAvatarColor(event.target.value)} />
+              <select className="input-base compact" value={hat} onChange={(event) => setHat(event.target.value)}>
+                {HATS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <select className="input-base compact" value={badge} onChange={(event) => setBadge(event.target.value)}>
+                {BADGES.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+            <button type="button" className="btn-secondary" onClick={submitProfileUpdate}>Apply Profile</button>
+          </div>
         </aside>
       </section>
     </main>

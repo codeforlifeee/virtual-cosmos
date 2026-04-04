@@ -1,48 +1,106 @@
-# Virtual Cosmos - Proximity Multiplayer Assignment
+# Virtual Cosmos
 
-A 2D realtime virtual environment where users move in a shared space and chat only when they are physically close in the world.
+A realtime 2D multiplayer world where users move around, connect by proximity, and interact through text, voice, and video.
 
-## What This Implements
+## Implemented Features
 
-- 2D arena with PixiJS rendering
-- Keyboard movement (WASD + Arrow keys)
-- Realtime multiplayer presence with Socket.IO
-- Proximity detection on the backend
-- Auto connect/disconnect logic based on distance radius
-- Chat enabled only while users remain within proximity
-- Active connections UI and room-scoped messaging
-- Optional MongoDB session persistence (last known user position)
+- Realtime movement with PixiJS avatars (WASD + Arrow keys)
+- Socket.IO multiplayer sync for join/move/leave
+- Proximity connect/disconnect logic
+- Proximity-gated text chat
+- Proximity-gated voice and video chat (WebRTC signaling over Socket.IO)
+- Spatial audio attenuation based on distance
+- Live video call with local/remote preview (within proximity)
+- Map zones and named rooms:
+  - Cafe
+  - Meeting Room
+  - Stage
+- Zone change detection and room occupancy counters
+- Reconnect/resume behavior:
+  - Automatic socket reconnect
+  - Last position resume on reconnect and relaunch
+- Emotes and quick reactions:
+  - wave
+  - thumbs
+  - laugh
+- User customization:
+  - display name
+  - avatar color
+  - hat
+  - badge
+  - profile persistence in MongoDB Atlas
+- Moderation basics:
+  - mute user
+  - block user
+  - report user
 
-## Stack And Justification
+## Stack
 
 ### Frontend
-- React + Vite: fast iteration and simple state/event wiring for realtime updates.
-- PixiJS: high-performance 2D rendering and smooth avatar updates.
-- Tailwind CSS: quick, consistent UI composition with custom visual theming.
+- React + Vite
+- PixiJS
+- Socket.IO client
+- WebRTC (browser native)
 
 ### Backend
-- Node.js + Express: lightweight API/runtime foundation.
-- Socket.IO: robust bidirectional events for movement and chat.
-- MongoDB (optional): stores user last position/session state if `MONGO_URI` is set.
+- Node.js + Express
+- Socket.IO
+- MongoDB Atlas via Mongoose
 
-## Project Structure
+## MongoDB Atlas Persistence
 
-- `frontend/`: React app, Pixi canvas world, movement + chat UI
-- `backend/`: Express + Socket.IO server, world state + proximity logic
+Persistence is implemented in backend models:
 
-## Local Setup
+- `UserProfile`
+  - `userKey`
+  - `displayName`
+  - `avatarColor`
+  - `hat`
+  - `badge`
+  - `lastX`
+  - `lastY`
+  - `blockedUserKeys`
+  - `mutedUserKeys`
+- `ChatMessage`
+  - `fromUserKey`
+  - `toUserKey`
+  - `text`
+  - `sentAt`
+- `ModerationReport`
+  - `reporterUserKey`
+  - `targetUserKey`
+  - `reason`
+  - `details`
 
-### 1. Install dependencies
+### Atlas Setup
+
+1. Create a MongoDB Atlas cluster.
+2. Create a database user.
+3. Add IP access:
+   - For local testing: your current IP.
+   - For cloud backend: `0.0.0.0/0` (or your hosting provider's static range).
+4. Copy connection string.
+5. Put it in backend environment as `MONGO_URI`.
+
+Example:
+
+```env
+MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/virtual-cosmos?retryWrites=true&w=majority
+```
+
+## Local Development
+
+### 1. Install
 
 From repository root:
 
 ```bash
 npm install
-npm install --prefix frontend
 npm install --prefix backend
+npm install --prefix frontend
 ```
 
-### 2. Configure environment
+### 2. Environment files
 
 Backend:
 
@@ -56,9 +114,29 @@ Frontend:
 cp frontend/.env.example frontend/.env
 ```
 
-If you want Mongo persistence, set `MONGO_URI` in `backend/.env`.
+### 3. Fill env values
 
-### 3. Run both apps
+Backend `.env`:
+
+```env
+PORT=4000
+FRONTEND_URL=http://localhost:5173
+FRONTEND_URLS=
+WORLD_WIDTH=1600
+WORLD_HEIGHT=900
+PROXIMITY_RADIUS=190
+MONGO_URI=<your atlas uri>
+# Optional custom ICE servers JSON
+# ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"}]
+```
+
+Frontend `.env`:
+
+```env
+VITE_SOCKET_URL=http://localhost:4000
+```
+
+### 4. Run
 
 ```bash
 npm run dev
@@ -67,50 +145,95 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:4000`
 
-## Assignment Requirements Mapping
+## Deployment Guide (Frontend + Backend)
 
-1. User movement
-- Implemented in frontend movement loop using keyboard input and speed normalization.
-- Users rendered as circles/avatars in PixiJS.
+Vercel is ideal for frontend. Socket backend should run on a persistent Node host.
 
-2. Realtime multiplayer
-- Backend tracks active users in memory and broadcasts join/move/leave events.
-- Frontend receives socket events and updates canvas in realtime.
+### Recommended Architecture
 
-3. Proximity detection
-- Backend computes Euclidean distance between moving user and every other user.
-- Threshold is `PROXIMITY_RADIUS`.
+1. Frontend: Vercel
+2. Backend: Render or Railway
+3. Database: MongoDB Atlas
 
-4. Chat system
-- If users are within radius, backend creates a pair room and sends proximity snapshot.
-- If users move apart, backend removes room membership and updates snapshot.
-- Chat input is enabled only when an active proximity connection exists.
+### Backend Deployment (Render)
 
-5. UI/UX
-- Custom visual direction, responsive layout for desktop/mobile.
-- Displays avatars, online status, nearby connections, and chat panel.
+1. Create Web Service from your GitHub repo.
+2. Root directory: `backend`
+3. Build command: `npm install`
+4. Start command: `npm run start`
+5. Add env vars:
+   - `PORT=4000`
+   - `FRONTEND_URL=https://<your-vercel-domain>`
+   - `FRONTEND_URLS=https://<preview-domain-1>,https://<preview-domain-2>` (optional)
+   - `WORLD_WIDTH=1600`
+   - `WORLD_HEIGHT=900`
+   - `PROXIMITY_RADIUS=190`
+   - `MONGO_URI=<atlas uri>`
+   - `ICE_SERVERS_JSON=<optional JSON>`
+6. Deploy and copy backend URL (example: `https://virtual-cosmos-api.onrender.com`).
 
-## Backend Event Contract (Socket.IO)
+### Frontend Deployment (Vercel)
 
-- `world:init`
-- `world:user-joined`
-- `world:user-moved`
-- `world:user-left`
-- `proximity:snapshot`
-- `chat:send`
-- `chat:message`
+1. Import repo into Vercel.
+2. Project root: `frontend`
+3. Framework preset: Vite
+4. Environment variables:
+   - `VITE_SOCKET_URL=https://<your-backend-domain>`
+5. Deploy.
 
-## Quick Demo Script (2-5 min)
+### Final CORS Step
 
-1. Open two browser windows/tabs.
-2. Enter different display names.
-3. Show independent movement.
-4. Move avatars together until nearby list populates.
-5. Send chat message while connected.
-6. Move one avatar away and show chat disabling/disconnect behavior.
-7. (Optional) Show persistence with Mongo enabled.
+Update backend `FRONTEND_URL` with your exact Vercel production URL and redeploy backend.
 
-## Notes
+## WebRTC Notes
 
-- MongoDB is optional and only used for session persistence.
-- Core multiplayer/proximity/chat behavior works fully in memory without Mongo.
+- Signaling is handled through Socket.IO events for both voice and video:
+  - `voice:offer`
+  - `voice:answer`
+  - `voice:ice-candidate`
+  - `voice:hangup`
+- Default STUN server works for many networks.
+- For stricter NAT/firewall environments, provide TURN in `ICE_SERVERS_JSON`.
+
+Example with TURN:
+
+```env
+ICE_SERVERS_JSON=[
+  {"urls":"stun:stun.l.google.com:19302"},
+  {"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}
+]
+```
+
+## Scripts
+
+Root:
+
+- `npm run dev` : start backend + frontend
+- `npm run dev:backend`
+- `npm run dev:frontend`
+- `npm run build:frontend`
+- `npm run start:backend`
+
+Backend:
+
+- `npm run dev`
+- `npm run start`
+
+Frontend:
+
+- `npm run dev`
+- `npm run build`
+- `npm run preview`
+
+## Demo Checklist
+
+1. Open two windows.
+2. Join with different profiles.
+3. Show movement sync.
+4. Move into same zone and show zone indicator.
+5. Show proximity chat enabling/disabling.
+6. Start voice and demonstrate spatial audio by moving.
+7. Start video call and show local/remote previews.
+8. Send emotes.
+9. Apply mute/block/report actions.
+10. Refresh one tab and show reconnect/resume.
