@@ -422,7 +422,6 @@ function App() {
     localStorage.setItem('cosmos-user-key', storedUserKey)
 
     const socket = io(SOCKET_URL, {
-      transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 800,
       auth: {

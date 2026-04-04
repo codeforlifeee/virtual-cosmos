@@ -64,18 +64,38 @@ const DEFAULT_ZONES = [
 	},
 ];
 
+const normalizeOrigin = (value) => String(value || "").trim().replace(/\/$/, "").toLowerCase();
+
 const parseAllowedOrigins = () => {
 	const singular = process.env.FRONTEND_URL || "http://localhost:5173";
 	const plural = process.env.FRONTEND_URLS || "";
 
 	return new Set(
 		[singular, ...plural.split(",")]
-			.map((value) => value.trim())
+			.map((value) => normalizeOrigin(value))
 			.filter(Boolean),
 	);
 };
 
 const allowedOrigins = parseAllowedOrigins();
+const allowAnyVercelOrigin = String(process.env.ALLOW_VERCEL_ORIGINS || "false").toLowerCase() === "true";
+
+const isOriginAllowed = (origin) => {
+	if (!origin) {
+		return true;
+	}
+
+	const normalized = normalizeOrigin(origin);
+	if (allowedOrigins.has(normalized)) {
+		return true;
+	}
+
+	if (allowAnyVercelOrigin && normalized.endsWith(".vercel.app")) {
+		return true;
+	}
+
+	return false;
+};
 
 const UserProfile = mongoose.model(
 	"UserProfile",
@@ -131,7 +151,7 @@ const app = express();
 app.use(
 	cors({
 		origin(origin, callback) {
-			if (!origin || allowedOrigins.has(origin)) {
+			if (isOriginAllowed(origin)) {
 				callback(null, true);
 				return;
 			}
@@ -147,7 +167,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
 	cors: {
 		origin(origin, callback) {
-			if (!origin || allowedOrigins.has(origin)) {
+			if (isOriginAllowed(origin)) {
 				callback(null, true);
 				return;
 			}
@@ -653,6 +673,11 @@ app.get("/health", (_, res) => {
 });
 
 const start = async () => {
+	console.log("Allowed frontend origins:", Array.from(allowedOrigins.values()));
+	if (allowAnyVercelOrigin) {
+		console.log("Allowing all .vercel.app origins");
+	}
+
 	if (process.env.MONGO_URI) {
 		try {
 			await mongoose.connect(process.env.MONGO_URI);
