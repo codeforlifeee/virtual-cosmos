@@ -254,13 +254,21 @@ body {
 .btn-emote {
   border: 1px solid #c6b799;
   border-radius: 999px;
-  padding: 0.25rem 0.6rem;
-  font-size: 0.72rem;
-  font-family: 'IBM Plex Mono', monospace;
-  letter-spacing: 0.05em;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.95rem;
+  font-family: 'Manrope', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   background: #fff8ea;
   color: #334a63;
   cursor: pointer;
+  transition: transform 130ms ease, border-color 130ms ease, background-color 130ms ease;
+}
+
+.btn-emote:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-dark);
+  background: #ffe9cf;
 }
 
 .btn-emote:disabled {
@@ -348,6 +356,13 @@ body {
   border-radius: 14px;
   background: linear-gradient(180deg, #edf3f8, #dae5ef);
   overflow: hidden;
+}
+
+.cosmos-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: crisp-edges;
 }
 
 .world-meta {

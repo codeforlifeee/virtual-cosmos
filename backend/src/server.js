@@ -489,8 +489,8 @@ io.on("connection", async (socket) => {
 			return;
 		}
 
-		activeUser.x = clamp(Math.round(payload.x), 0, WORLD_WIDTH);
-		activeUser.y = clamp(Math.round(payload.y), 0, WORLD_HEIGHT);
+		activeUser.x = clamp(payload.x, 0, WORLD_WIDTH);
+		activeUser.y = clamp(payload.y, 0, WORLD_HEIGHT);
 
 		const previousZone = activeUser.zoneId;
 		activeUser.zoneId = findZoneId(activeUser.x, activeUser.y);

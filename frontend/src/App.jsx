@@ -8,9 +8,14 @@ const HATS = ['none', 'cap', 'halo', 'wizard']
 const BADGES = ['none', 'star', 'helper', 'captain']
 const EMOTE_OPTIONS = ['wave', 'thumbs', 'laugh']
 const EMOTE_LABELS = {
-  wave: 'WAVE',
-  thumbs: 'THUMBS',
-  laugh: 'LAUGH',
+  wave: '👋',
+  thumbs: '👍',
+  laugh: '😂',
+}
+const EMOTE_BUTTON_LABELS = {
+  wave: '👋 Wave',
+  thumbs: '👍 Thumbs Up',
+  laugh: '😂 Laugh',
 }
 
 const MOVEMENT_KEYS = {
@@ -141,6 +146,7 @@ function App() {
   const remoteVideoRef = useRef(null)
   const connectedUserIdsRef = useRef([])
   const zoneMapRef = useRef({})
+  const lastLocalMoveAtRef = useRef(0)
 
   const setUsersSafe = (updater) => {
     setUsers((prev) => {
@@ -556,6 +562,25 @@ function App() {
     })
 
     socket.on('world:user-moved', (user) => {
+      const isSelf = user.id === selfIdRef.current
+      const hasPressedMovementKey = keyStateRef.current.size > 0
+      const isRecentPredictedMove = performance.now() - lastLocalMoveAtRef.current < 140
+
+      if (isSelf && hasPressedMovementKey && isRecentPredictedMove) {
+        setUsersSafe((prev) => ({
+          ...prev,
+          [user.id]: {
+            ...(prev[user.id] || {}),
+            ...user,
+            x: prev[user.id]?.x ?? user.x,
+            y: prev[user.id]?.y ?? user.y,
+          },
+        }))
+
+        setCurrentZoneId(user.zoneId || null)
+        return
+      }
+
       setUsersSafe((prev) => ({
         ...prev,
         [user.id]: {
@@ -744,6 +769,10 @@ function App() {
       return
     }
 
+    const clearMovementKeys = () => {
+      keyStateRef.current.clear()
+    }
+
     const onKeyDown = (event) => {
       const key = event.key.toLowerCase()
       if (!MOVEMENT_KEYS[key]) {
@@ -765,13 +794,23 @@ function App() {
       keyStateRef.current.delete(event.key.toLowerCase())
     }
 
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        clearMovementKeys()
+      }
+    }
+
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', clearMovementKeys)
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
-      keyStateRef.current.clear()
+      window.removeEventListener('blur', clearMovementKeys)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      clearMovementKeys()
     }
   }, [joined])
 
@@ -785,7 +824,7 @@ function App() {
     let lastSentAt = 0
 
     const step = (now) => {
-      const delta = (now - previousTime) / 1000
+      const delta = Math.min((now - previousTime) / 1000, 0.05)
       previousTime = now
 
       const me = usersRef.current[selfIdRef.current]
@@ -802,15 +841,23 @@ function App() {
           const mag = Math.sqrt(axisX * axisX + axisY * axisY) || 1
           const nextX = clamp(me.x + (axisX / mag) * SPEED * delta, 0, worldConfig.worldWidth)
           const nextY = clamp(me.y + (axisY / mag) * SPEED * delta, 0, worldConfig.worldHeight)
+          lastLocalMoveAtRef.current = now
 
-          setUsersSafe((prev) => ({
-            ...prev,
-            [selfIdRef.current]: {
-              ...prev[selfIdRef.current],
-              x: nextX,
-              y: nextY,
-            },
-          }))
+          setUsersSafe((prev) => {
+            const existing = prev[selfIdRef.current]
+            if (!existing) {
+              return prev
+            }
+
+            return {
+              ...prev,
+              [selfIdRef.current]: {
+                ...existing,
+                x: nextX,
+                y: nextY,
+              },
+            }
+          })
 
           if (now - lastSentAt > 45) {
             socketRef.current?.emit('player:move', {
@@ -855,11 +902,12 @@ function App() {
         (screenW - padding * 2) / worldConfig.worldWidth,
         (screenH - padding * 2) / worldConfig.worldHeight,
       )
+      const snappedRatio = Math.round(ratio * 1000) / 1000
 
-      world.scale.set(ratio)
+      world.scale.set(snappedRatio)
       world.position.set(
-        (screenW - worldConfig.worldWidth * ratio) / 2,
-        (screenH - worldConfig.worldHeight * ratio) / 2,
+        Math.round((screenW - worldConfig.worldWidth * snappedRatio) / 2),
+        Math.round((screenH - worldConfig.worldHeight * snappedRatio) / 2),
       )
 
       arena.clear()
@@ -871,13 +919,13 @@ function App() {
 
       arena.lineStyle(1, 0x94a7bb, 0.45)
       for (let x = 80; x < worldConfig.worldWidth; x += 80) {
-        arena.moveTo(x, 0)
-        arena.lineTo(x, worldConfig.worldHeight)
+        arena.moveTo(x + 0.5, 0)
+        arena.lineTo(x + 0.5, worldConfig.worldHeight)
       }
 
       for (let y = 80; y < worldConfig.worldHeight; y += 80) {
-        arena.moveTo(0, y)
-        arena.lineTo(worldConfig.worldWidth, y)
+        arena.moveTo(0, y + 0.5)
+        arena.lineTo(worldConfig.worldWidth, y + 0.5)
       }
 
       zonesLayer.clear()
@@ -909,7 +957,9 @@ function App() {
       const app = new PIXI.Application()
       await app.init({
         resizeTo: hostRef.current,
-        antialias: true,
+        antialias: false,
+        autoDensity: true,
+        resolution: Math.max(window.devicePixelRatio || 1, 1),
         backgroundAlpha: 0,
       })
 
@@ -1040,13 +1090,13 @@ function App() {
           text: '',
           style: {
             fill: 0x1d2f44,
-            fontFamily: 'IBM Plex Mono',
-            fontSize: 11,
+            fontFamily: 'Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, Manrope',
+            fontSize: 27,
             fontWeight: '700',
           },
         })
         emoteLabel.anchor.set(0.5, 1)
-        emoteLabel.y = -40
+        emoteLabel.y = -44
 
         container.addChild(ring)
         container.addChild(body)
@@ -1432,7 +1482,7 @@ function App() {
                 className="btn-emote"
                 onClick={() => sendEmote(emote)}
               >
-                {EMOTE_LABELS[emote]}
+                {EMOTE_BUTTON_LABELS[emote]}
               </button>
             ))}
           </div>
