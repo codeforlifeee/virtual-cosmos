@@ -1,108 +1,148 @@
 # Virtual Cosmos
 
-A realtime 2D multiplayer world where users move around, connect by proximity, and interact through text, voice, and video.
+Virtual Cosmos is a realtime 2D multiplayer world where users move in a shared arena and can interact only when they are physically close in-game.
 
-## Implemented Features
+It combines:
 
-- Realtime movement with PixiJS avatars (WASD + Arrow keys)
-- Room ID based session isolation (users only see/interact inside their room)
-- Socket.IO multiplayer sync for join/move/leave
-- Proximity connect/disconnect logic
-- Proximity-gated text chat
-- Proximity-gated voice and video chat (WebRTC signaling over Socket.IO)
-- Spatial audio attenuation based on distance
-- Live video call with local/remote preview (within proximity)
-- Map zones and named rooms:
-  - Cafe
-  - Meeting Room
-  - Stage
-- Zone change detection and room occupancy counters
-- Reconnect/resume behavior:
-  - Automatic socket reconnect
-  - Last position resume on reconnect and relaunch
-- Emotes and quick reactions:
-  - wave
-  - thumbs
-  - laugh
-- User customization:
+- Realtime avatar movement
+- Proximity-based networking
+- Text chat
+- Voice and video calls (WebRTC)
+- Moderation controls
+- MongoDB-backed profile and history persistence
+
+## Feature Coverage
+
+This section maps directly to what the current codebase implements.
+
+### World And Presence
+
+- Realtime multiplayer sync with Socket.IO
+- Keyboard movement with both `WASD` and arrow keys
+- Client-side movement prediction with periodic server reconciliation
+- Room isolation by Room ID (users only see/interact within the same room)
+- Join, move, update, leave presence broadcasting
+- World dimensions configurable through environment variables
+- Three named zones rendered on the map:
+  - `Cafe`
+  - `Meeting Room`
+  - `Stage`
+- Zone entry/exit detection and live per-zone occupancy counters
+
+### Proximity System
+
+- Automatic proximity connect/disconnect based on distance
+- Proximity radius is server-configurable (`PROXIMITY_RADIUS`)
+- Private pair channels for nearby users
+- Calls/chats end or lock automatically when users move out of range
+
+### Communication
+
+- Proximity-gated 1:1 text chat
+- Proximity-gated voice calls
+- Proximity-gated video calls
+- WebRTC signaling over Socket.IO:
+  - `voice:offer`
+  - `voice:answer`
+  - `voice:ice-candidate`
+  - `voice:hangup`
+- Configurable ICE servers via `ICE_SERVERS_JSON`
+- Spatial audio attenuation based on distance (louder when closer)
+- Local and remote video preview panels
+- Quick emotes:
+  - `wave`
+  - `thumbs`
+  - `laugh`
+
+### Identity And Customization
+
+- Display name
+- Avatar color
+- Hat options: `none`, `cap`, `halo`, `wizard`
+- Badge options: `none`, `star`, `helper`, `captain`
+- Persistent user identity via generated `userKey` in localStorage
+- Preference persistence in localStorage:
   - display name
+  - room ID
   - avatar color
   - hat
   - badge
-  - profile persistence in MongoDB Atlas
-- Moderation basics:
-  - mute user
-  - block user
-  - report user
+- Last position persistence and reconnect resume
 
-## Stack
+### Moderation And Safety
 
-### Frontend
-- React + Vite
-- PixiJS
-- Socket.IO client
-- WebRTC (browser native)
+- Mute user
+- Block/unblock user
+- Report user with reason and optional details
+- Blocked pairs cannot keep proximity links or exchange calls/chat
+- Muted users are filtered in chat playback and audio volume
 
-### Backend
-- Node.js + Express
-- Socket.IO
-- MongoDB Atlas via Mongoose
+### Persistence
 
-## MongoDB Atlas Persistence
-
-Persistence is implemented in backend models:
+When MongoDB is available, the backend persists:
 
 - `UserProfile`
-  - `userKey`
-  - `lastRoomId`
-  - `displayName`
-  - `avatarColor`
-  - `hat`
-  - `badge`
-  - `lastX`
-  - `lastY`
-  - `blockedUserKeys`
-  - `mutedUserKeys`
+  - profile fields
+  - last room
+  - last position
+  - mute/block lists
 - `ChatMessage`
-  - `roomId`
-  - `fromUserKey`
-  - `toUserKey`
-  - `text`
-  - `sentAt`
+  - room
+  - sender/receiver keys
+  - message text
+  - sent timestamp
 - `ModerationReport`
-  - `roomId`
-  - `reporterUserKey`
-  - `targetUserKey`
-  - `reason`
-  - `details`
+  - reporter
+  - target
+  - reason
+  - details
 
-### Atlas Setup
+### Reliability And Runtime Behavior
 
-1. Create a MongoDB Atlas cluster.
-2. Create a database user.
-3. Add IP access:
-   - For local testing: your current IP.
-   - For cloud backend: `0.0.0.0/0` (or your hosting provider's static range).
-4. Copy connection string.
-5. Put it in backend environment as `MONGO_URI`.
+- Automatic socket reconnect
+- Reconnect status updates shown in UI
+- Graceful fallback to in-memory mode when Mongo is missing or invalid
+- CORS allowlist with support for:
+  - single frontend origin (`FRONTEND_URL`)
+  - multiple origins (`FRONTEND_URLS`)
+  - optional wildcard Vercel previews (`ALLOW_VERCEL_ORIGINS=true`)
+- `/health` endpoint with users, rooms, Mongo, and zone metadata
 
-Example:
+## Tech Stack
 
-```env
-MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/virtual-cosmos?retryWrites=true&w=majority
+### Frontend
+
+- React 19 + Vite
+- PixiJS (2D rendering)
+- Socket.IO Client
+- Native browser WebRTC APIs
+
+### Backend
+
+- Node.js + Express
+- Socket.IO
+- Mongoose + MongoDB Atlas
+
+## Project Structure
+
+```text
+.
+|- backend/
+|  |- src/server.js
+|  |- .env.example
+|  |- package.json
+|- frontend/
+|  |- src/App.jsx
+|  |- .env.example
+|  |- package.json
+|- package.json
 ```
 
-## Local Development
+## Local Setup
 
-Room behavior:
+### 1. Install Dependencies
 
-- Enter a Room ID on the join screen (example: `team-alpha`).
-- Only users in the same Room ID will be visible, connect by proximity, and chat/call.
-- Switching room in UI disconnects current room and lets you rejoin with a new Room ID.
-
-### 1. Install
-
-From repository root:
+From the repository root:
 
 ```bash
 npm install
@@ -110,43 +150,46 @@ npm install --prefix backend
 npm install --prefix frontend
 ```
 
-### 2. Environment files
+### 2. Create Environment Files
 
-Backend:
+Windows PowerShell:
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+Copy-Item frontend/.env.example frontend/.env
+```
+
+macOS/Linux:
 
 ```bash
 cp backend/.env.example backend/.env
-```
-
-Frontend:
-
-```bash
 cp frontend/.env.example frontend/.env
 ```
 
-### 3. Fill env values
+### 3. Configure Environment Variables
 
-Backend `.env`:
+#### Backend (`backend/.env`)
 
 ```env
 PORT=4000
 FRONTEND_URL=http://localhost:5173
 FRONTEND_URLS=
+ALLOW_VERCEL_ORIGINS=false
 WORLD_WIDTH=1600
 WORLD_HEIGHT=900
 PROXIMITY_RADIUS=190
-MONGO_URI=<your atlas uri>
-# Optional custom ICE servers JSON
+MONGO_URI=<your-mongodb-uri>
+# Optional
 # ICE_SERVERS_JSON=[{"urls":"stun:stun.l.google.com:19302"}]
 ```
 
-Frontend `.env`:
+#### Frontend (`frontend/.env`)
 
 ```env
 VITE_SOCKET_URL=http://localhost:4000
 ```
 
-### 4. Run
+### 4. Run The App
 
 ```bash
 npm run dev
@@ -155,97 +198,88 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:4000`
 
-## Deployment Guide (Frontend + Backend)
-
-Vercel is ideal for frontend. Socket backend should run on a persistent Node host.
-
-### Recommended Architecture
-
-1. Frontend: Vercel
-2. Backend: Render or Railway
-3. Database: MongoDB Atlas
-
-### Backend Deployment (Render)
-
-1. Create Web Service from your GitHub repo.
-2. Root directory: `backend`
-3. Build command: `npm install`
-4. Start command: `npm run start`
-5. Add env vars:
-   - `PORT=4000`
-   - `FRONTEND_URL=https://<your-vercel-domain>`
-   - `FRONTEND_URLS=https://<preview-domain-1>,https://<preview-domain-2>` (optional)
-   - `WORLD_WIDTH=1600`
-   - `WORLD_HEIGHT=900`
-   - `PROXIMITY_RADIUS=190`
-   - `MONGO_URI=<atlas uri>`
-   - `ICE_SERVERS_JSON=<optional JSON>`
-6. Deploy and copy backend URL (example: `https://virtual-cosmos-api.onrender.com`).
-
-### Frontend Deployment (Vercel)
-
-1. Import repo into Vercel.
-2. Project root: `frontend`
-3. Framework preset: Vite
-4. Environment variables:
-   - `VITE_SOCKET_URL=https://<your-backend-domain>`
-5. Deploy.
-
-### Final CORS Step
-
-Update backend `FRONTEND_URL` with your exact Vercel production URL and redeploy backend.
-
-## WebRTC Notes
-
-- Signaling is handled through Socket.IO events for both voice and video:
-  - `voice:offer`
-  - `voice:answer`
-  - `voice:ice-candidate`
-  - `voice:hangup`
-- Default STUN server works for many networks.
-- For stricter NAT/firewall environments, provide TURN in `ICE_SERVERS_JSON`.
-
-Example with TURN:
-
-```env
-ICE_SERVERS_JSON=[
-  {"urls":"stun:stun.l.google.com:19302"},
-  {"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}
-]
-```
-
 ## Scripts
 
-Root:
+### Root
 
-- `npm run dev` : start backend + frontend
-- `npm run dev:backend`
-- `npm run dev:frontend`
-- `npm run build:frontend`
-- `npm run start:backend`
+- `npm run dev` -> run backend + frontend together
+- `npm run dev:backend` -> run backend only
+- `npm run dev:frontend` -> run frontend only
+- `npm run build:frontend` -> build frontend
+- `npm run start:backend` -> start backend in production mode
 
-Backend:
+### Backend
 
-- `npm run dev`
-- `npm run start`
+- `npm run dev` -> nodemon server
+- `npm run start` -> node server
 
-Frontend:
+### Frontend
 
-- `npm run dev`
-- `npm run build`
-- `npm run preview`
+- `npm run dev` -> Vite dev server
+- `npm run build` -> production build
+- `npm run preview` -> preview build
 
-## Demo Checklist
+## Deployment Notes
 
-1. Open two windows.
-2. Join with different profiles.
-3. Show movement sync.
-4. Join two different Room IDs and show they cannot see each other.
-5. Join same Room ID in two tabs and show they sync.
-6. Move into same zone and show zone indicator.
-7. Show proximity chat enabling/disabling.
-8. Start voice and demonstrate spatial audio by moving.
-9. Start video call and show local/remote previews.
-10. Send emotes.
-11. Apply mute/block/report actions.
-12. Refresh one tab and show reconnect/resume.
+Recommended split:
+
+1. Frontend on Vercel (or Netlify)
+2. Backend on a persistent Node host (Render, Railway, Fly.io, etc.)
+3. MongoDB Atlas for persistence
+
+Deployment checklist:
+
+1. Set `VITE_SOCKET_URL` in frontend to backend URL.
+2. Set `FRONTEND_URL` in backend to exact frontend domain.
+3. Optionally add preview domains to `FRONTEND_URLS`.
+4. Set `MONGO_URI` on backend.
+5. Redeploy both services after environment changes.
+
+## Health Endpoint
+
+`GET /health` returns operational status including:
+
+- service status
+- users online
+- rooms online
+- Mongo configured/connected state
+- runtime mode (`atlas` or `memory`)
+- configured zone names
+
+## Troubleshooting
+
+### Mongo URI looks malformed
+
+If your password includes special characters (`@`, `#`, `:`, etc.), URL-encode it before placing it in `MONGO_URI`.
+
+Example: `@` becomes `%40`.
+
+### Camera/Microphone not working
+
+- Check browser permission prompts
+- Ensure no other app is locking camera/mic
+- Verify HTTPS in production for media permissions
+
+### Can connect but cannot chat/call
+
+- Verify both users are in the same Room ID
+- Move avatars closer (communication is proximity-gated)
+- Check if one user blocked the other
+
+## Security Notes
+
+- Do not commit real credentials to version control.
+- Keep production secrets in your hosting provider environment settings.
+
+## Demo Flow
+
+1. Open two browser windows.
+2. Join with two different names in the same Room ID.
+3. Move around and verify live sync.
+4. Move close enough to form a proximity connection.
+5. Exchange chat messages and emotes.
+6. Start voice and test spatial attenuation by moving apart.
+7. Start video and verify local/remote preview.
+8. Test mute, block, and report controls.
+9. Switch room in one tab and verify isolation.
+10. Refresh a tab and verify reconnect/resume behavior.
