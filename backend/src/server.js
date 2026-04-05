@@ -8,6 +8,40 @@ const mongoose = require("mongoose");
 dotenv.config();
 
 const PORT = Number(process.env.PORT || 4000);
+const MONGO_URI = String(process.env.MONGO_URI || "").trim();
+
+const hasSuspiciousMongoAuthority = (uri) => {
+	if (!uri) {
+		return false;
+	}
+
+	const schemeSeparator = uri.indexOf("://");
+	if (schemeSeparator < 0) {
+		return false;
+	}
+
+	const afterScheme = uri.slice(schemeSeparator + 3);
+	const authority = afterScheme.split("/")[0] || "";
+	const atCount = (authority.match(/@/g) || []).length;
+	return atCount > 1;
+};
+
+let mongoConnectionEnabled = Boolean(MONGO_URI);
+let mongoDisableReason = "";
+
+if (mongoConnectionEnabled && !/^mongodb(\+srv)?:\/\//.test(MONGO_URI)) {
+	mongoConnectionEnabled = false;
+	mongoDisableReason = "MONGO_URI must start with mongodb:// or mongodb+srv://";
+}
+
+if (mongoConnectionEnabled && hasSuspiciousMongoAuthority(MONGO_URI)) {
+	mongoConnectionEnabled = false;
+	mongoDisableReason =
+		"MONGO_URI looks malformed (multiple @ in host section). URL-encode special password characters, for example @ as %40.";
+}
+
+const isMongoReady = () => mongoConnectionEnabled && mongoose.connection.readyState === 1;
+
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH || 1600);
 const WORLD_HEIGHT = Number(process.env.WORLD_HEIGHT || 900);
 const PROXIMITY_RADIUS = Number(process.env.PROXIMITY_RADIUS || 190);
@@ -359,7 +393,7 @@ const reconcileProximity = (sourceSocketId) => {
 };
 
 const persistProfile = async (user) => {
-	if (!process.env.MONGO_URI) {
+	if (!isMongoReady()) {
 		return;
 	}
 
@@ -418,7 +452,7 @@ io.on("connection", async (socket) => {
 	const roomId = safeRoomId(auth.roomId);
 
 	let existingProfile = null;
-	if (process.env.MONGO_URI) {
+	if (isMongoReady()) {
 		try {
 			existingProfile = await UserProfile.findOne({ userKey }).lean();
 		} catch (error) {
@@ -547,7 +581,7 @@ io.on("connection", async (socket) => {
 			sentAt: new Date().toISOString(),
 		});
 
-		if (process.env.MONGO_URI) {
+		if (isMongoReady()) {
 			try {
 				await ChatMessage.create({
 					roomId: sourceUser.roomId,
@@ -687,7 +721,7 @@ io.on("connection", async (socket) => {
 		const reason = String(payload?.reason || "other").slice(0, 40);
 		const details = String(payload?.details || "").slice(0, 500);
 
-		if (process.env.MONGO_URI) {
+		if (isMongoReady()) {
 			try {
 				await ModerationReport.create({
 					roomId: sourceUser.roomId,
@@ -731,7 +765,9 @@ app.get("/health", (_, res) => {
 		status: "ok",
 		usersOnline: users.size,
 		roomsOnline: new Set(Array.from(users.values()).map((user) => user.roomId)).size,
-		mongoConfigured: Boolean(process.env.MONGO_URI),
+		mongoConfigured: mongoConnectionEnabled,
+		mongoConnected: isMongoReady(),
+		mongoMode: isMongoReady() ? "atlas" : "memory",
 		zones: DEFAULT_ZONES.map((zone) => ({ id: zone.id, name: zone.name })),
 	});
 });
@@ -742,13 +778,16 @@ const start = async () => {
 		console.log("Allowing all .vercel.app origins");
 	}
 
-	if (process.env.MONGO_URI) {
+	if (mongoConnectionEnabled) {
 		try {
-			await mongoose.connect(process.env.MONGO_URI);
+			await mongoose.connect(MONGO_URI);
 			console.log("Connected to MongoDB Atlas");
 		} catch (error) {
+			mongoConnectionEnabled = false;
 			console.error("Mongo connection failed; continuing in memory mode", error.message);
 		}
+	} else if (MONGO_URI) {
+		console.warn(`Mongo disabled; continuing in memory mode (${mongoDisableReason})`);
 	}
 
 	server.listen(PORT, () => {
