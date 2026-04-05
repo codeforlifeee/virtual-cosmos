@@ -147,6 +147,8 @@ function App() {
   const connectedUserIdsRef = useRef([])
   const zoneMapRef = useRef({})
   const lastLocalMoveAtRef = useRef(0)
+  const wasMovingRef = useRef(false)
+  const lastPredictedPositionRef = useRef(null)
 
   const setUsersSafe = (updater) => {
     setUsers((prev) => {
@@ -541,6 +543,9 @@ function App() {
       const mapped = toUserMap(payload.users)
       setUsersSafe(mapped)
       const me = mapped[payload.selfId]
+      if (me) {
+        lastPredictedPositionRef.current = { x: me.x, y: me.y }
+      }
       setCurrentZoneId(me?.zoneId || null)
     })
 
@@ -563,10 +568,9 @@ function App() {
 
     socket.on('world:user-moved', (user) => {
       const isSelf = user.id === selfIdRef.current
-      const hasPressedMovementKey = keyStateRef.current.size > 0
-      const isRecentPredictedMove = performance.now() - lastLocalMoveAtRef.current < 140
+      const isRecentPredictedMove = performance.now() - lastLocalMoveAtRef.current < 450
 
-      if (isSelf && hasPressedMovementKey && isRecentPredictedMove) {
+      if (isSelf && isRecentPredictedMove) {
         setUsersSafe((prev) => ({
           ...prev,
           [user.id]: {
@@ -769,8 +773,23 @@ function App() {
       return
     }
 
+    const flushFinalPosition = () => {
+      if (!wasMovingRef.current) {
+        return
+      }
+
+      const self = usersRef.current[selfIdRef.current]
+      const finalPosition = lastPredictedPositionRef.current || (self ? { x: self.x, y: self.y } : null)
+      if (finalPosition) {
+        socketRef.current?.emit('player:move', finalPosition)
+      }
+
+      wasMovingRef.current = false
+    }
+
     const clearMovementKeys = () => {
       keyStateRef.current.clear()
+      flushFinalPosition()
     }
 
     const onKeyDown = (event) => {
@@ -792,6 +811,9 @@ function App() {
 
     const onKeyUp = (event) => {
       keyStateRef.current.delete(event.key.toLowerCase())
+      if (keyStateRef.current.size === 0) {
+        flushFinalPosition()
+      }
     }
 
     const onVisibilityChange = () => {
@@ -842,6 +864,8 @@ function App() {
           const nextX = clamp(me.x + (axisX / mag) * SPEED * delta, 0, worldConfig.worldWidth)
           const nextY = clamp(me.y + (axisY / mag) * SPEED * delta, 0, worldConfig.worldHeight)
           lastLocalMoveAtRef.current = now
+          lastPredictedPositionRef.current = { x: nextX, y: nextY }
+          wasMovingRef.current = true
 
           setUsersSafe((prev) => {
             const existing = prev[selfIdRef.current]
@@ -866,6 +890,11 @@ function App() {
             })
             lastSentAt = now
           }
+        } else if (wasMovingRef.current) {
+          const finalPosition = lastPredictedPositionRef.current || { x: me.x, y: me.y }
+          socketRef.current?.emit('player:move', finalPosition)
+          lastSentAt = now
+          wasMovingRef.current = false
         }
       }
 
@@ -874,7 +903,10 @@ function App() {
 
     animationFrameId = requestAnimationFrame(step)
 
-    return () => cancelAnimationFrame(animationFrameId)
+    return () => {
+      cancelAnimationFrame(animationFrameId)
+      wasMovingRef.current = false
+    }
   }, [joined, selfId, worldConfig.worldHeight, worldConfig.worldWidth])
 
   useEffect(() => {
