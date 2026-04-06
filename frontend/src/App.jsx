@@ -330,10 +330,21 @@ function App() {
     setActiveCallMode('none')
   }
 
-  const ensureLocalMedia = async ({ video = false } = {}) => {
+  const ensureLocalMedia = async ({ audio = true, video = false } = {}) => {
     if (localStreamRef.current) {
+      const hasAudio = localStreamRef.current.getAudioTracks().length > 0
       const hasVideo = localStreamRef.current.getVideoTracks().length > 0
-      if ((video && hasVideo) || (!video && !hasVideo)) {
+      const audioSatisfied = !audio || hasAudio
+      const videoSatisfied = !video || hasVideo
+
+      if (audioSatisfied && videoSatisfied) {
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = video ? localStreamRef.current : null
+          if (video) {
+            localVideoRef.current.play().catch(() => {})
+          }
+        }
+
         return localStreamRef.current
       }
 
@@ -347,29 +358,16 @@ function App() {
       throw new Error('MediaDevicesUnavailable')
     }
 
-    let stream
-    if (video) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio,
+      video: video
+        ? {
             facingMode: 'user',
             width: { ideal: 1280 },
             height: { ideal: 720 },
-          },
-        })
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: true,
-        })
-      }
-    } else {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      })
-    }
+          }
+        : false,
+    })
 
     localStreamRef.current = stream
 
@@ -447,13 +445,13 @@ function App() {
     return existing
   }
 
-  const startCall = async (peerId, mode) => {
+  const startLiveCall = async (peerId) => {
     if (!peerId || !connectedUserIds.includes(peerId)) {
       return
     }
 
     try {
-      await ensureLocalMedia({ video: mode === 'video' })
+      await ensureLocalMedia({ audio: true, video: true })
       const pc = await createPeerConnection(peerId)
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
@@ -464,21 +462,13 @@ function App() {
       })
 
       setActiveVoicePeerId(peerId)
-      setActiveCallMode(mode)
+      setActiveCallMode('live')
       setVoiceError('')
     } catch (error) {
       setVoiceError(toMediaErrorMessage(error))
       setActiveVoicePeerId('')
       setActiveCallMode('none')
     }
-  }
-
-  const startVoiceCall = async (peerId) => {
-    await startCall(peerId, 'voice')
-  }
-
-  const startVideoCall = async (peerId) => {
-    await startCall(peerId, 'video')
   }
 
   useEffect(() => {
@@ -660,7 +650,7 @@ function App() {
 
       try {
         const hasVideo = String(sdp?.sdp || '').includes('m=video')
-        await ensureLocalMedia({ video: hasVideo })
+        await ensureLocalMedia({ audio: true, video: hasVideo })
         const pc = await createPeerConnection(fromId)
         await pc.setRemoteDescription(new RTCSessionDescription(sdp))
 
@@ -673,7 +663,7 @@ function App() {
         })
 
         setActiveVoicePeerId(fromId)
-        setActiveCallMode(hasVideo ? 'video' : 'voice')
+        setActiveCallMode(hasVideo ? 'live' : 'voice')
         if (!hasVideo) {
           setRemoteVideoStream(null)
         }
@@ -692,7 +682,7 @@ function App() {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp))
         const hasVideo = String(sdp?.sdp || '').includes('m=video')
-        setActiveCallMode(hasVideo ? 'video' : 'voice')
+        setActiveCallMode(hasVideo ? 'live' : 'voice')
       } catch {
         setVoiceError('Call answer could not be applied.')
       }
@@ -1233,12 +1223,12 @@ function App() {
     })
   }
 
-  const toggleVoice = async () => {
+  const toggleLive = async () => {
     if (!activeChatId || !connectedUserIds.includes(activeChatId)) {
       return
     }
 
-    if (activeVoicePeerId === activeChatId && activeCallMode === 'voice') {
+    if (activeVoicePeerId === activeChatId && activeCallMode === 'live') {
       closeVoicePeer(activeChatId, true)
       setVoiceError('')
       return
@@ -1248,25 +1238,7 @@ function App() {
       closeVoicePeer(activeVoicePeerId, true)
     }
 
-    await startVoiceCall(activeChatId)
-  }
-
-  const toggleVideo = async () => {
-    if (!activeChatId || !connectedUserIds.includes(activeChatId)) {
-      return
-    }
-
-    if (activeVoicePeerId === activeChatId && activeCallMode === 'video') {
-      closeVoicePeer(activeChatId, true)
-      setVoiceError('')
-      return
-    }
-
-    if (activeVoicePeerId) {
-      closeVoicePeer(activeVoicePeerId, true)
-    }
-
-    await startVideoCall(activeChatId)
+    await startLiveCall(activeChatId)
   }
 
   const handleEnterCosmos = () => {
@@ -1414,9 +1386,9 @@ function App() {
                 autoPlay
                 playsInline
                 muted
-                className={`video-preview ${activeCallMode === 'video' ? '' : 'hidden'}`}
+                className={`video-preview ${activeCallMode === 'live' ? '' : 'hidden'}`}
               ></video>
-              {activeCallMode !== 'video' && <p className="inline-note">Camera off</p>}
+              {activeCallMode !== 'live' && <p className="inline-note">Camera off</p>}
             </div>
             <div className="video-box">
               <p className="mono video-title">Peer</p>
@@ -1496,11 +1468,8 @@ function App() {
           </form>
 
           <div className="panel-row">
-            <button className="btn-secondary" type="button" disabled={!activeChatId} onClick={toggleVoice}>
-              {activeVoicePeerId === activeChatId && activeCallMode === 'voice' ? 'End Voice' : 'Start Voice'}
-            </button>
-            <button className="btn-secondary" type="button" disabled={!activeChatId} onClick={toggleVideo}>
-              {activeVoicePeerId === activeChatId && activeCallMode === 'video' ? 'End Video' : 'Start Video'}
+            <button className="btn-secondary" type="button" disabled={!activeChatId} onClick={toggleLive}>
+              {activeVoicePeerId === activeChatId && activeCallMode === 'live' ? 'End Live' : 'Start Live'}
             </button>
             {voiceError && <span className="inline-note">{voiceError}</span>}
           </div>
